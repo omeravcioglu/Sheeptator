@@ -401,7 +401,6 @@ namespace Fleeced
             }
             scroll = Mathf.Clamp(scroll, 0, Mathf.Max(0, contentH - r.height));
             GUI.BeginGroup(r);
-            clipActive = true; clipRect = new Rect(0, 0, r.width, r.height);
             if (contentH > r.height)
             {
                 var track = new Rect(r.width - 4, 0, 4, r.height);
@@ -413,6 +412,8 @@ namespace Fleeced
                 Fill(new Rect(track.x + 1, by, 2, 1), Rivet);
             }
             GUI.BeginGroup(new Rect(0, -scroll, r.width - 6, contentH + r.height));
+            // hover and clicks inside: the mouse is now in content coordinates, so the visible window starts at y = scroll
+            clipActive = true; clipRect = new Rect(0, scroll, r.width, r.height);
             groupOffset = new Vector2(r.x, r.y - scroll); groupClip = r; groupClipOn = true;
         }
 
@@ -445,13 +446,7 @@ namespace Fleeced
             PixelFont.DrawWrapped(new Rect(r.x + 6, ty, inner, h), body, Text);
         }
 
-        public static string Fmt(double v)
-        {
-            double a = System.Math.Abs(v);
-            if (a >= 1000000) return (v / 1000000.0).ToString("0.0") + "M";
-            if (a >= 10000) return (v / 1000.0).ToString("0.0") + "k";
-            return ((int)System.Math.Floor(v)).ToString();
-        }
+        public static string Fmt(double v) { return Num.Fmt(v); } // v9's format below a billion, named or scientific above
         public static string Rate(float perMin)
         {
             if (Mathf.Abs(perMin) < 0.5f) return "^k+0/m";

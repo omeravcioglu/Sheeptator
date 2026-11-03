@@ -54,6 +54,7 @@ namespace Fleeced
             if (d.kind == BKind.Palace) { LeaderArt.PaintPalace(c, s); return; }
             if (d.kind == BKind.Trough) { TroughPreview(c); return; }
             if (d.kind == BKind.Pen || d.kind == BKind.FeedLot) { PenPreview(c, d); return; }
+            if (d.kind == BKind.SheepGate) { GateHouse(c, false); return; }
             if (lv >= 4)
             {
                 if (d.kind == BKind.House) { HouseMega(c, lv, s); return; }
@@ -1121,6 +1122,96 @@ namespace Fleeced
                 s.smoke.Add(L(c, W - 2, Mathf.Max(1, base_ - 44)));
             }
             Stains(c, 4, base_ - 2, W - 8, 2);
+        }
+
+        // ---------- the Sheep Gate ----------
+        /// the Sheep Gate shut (the sprite Get returns) or open with a lamb on its way out. Same size and pivot, so swapping
+        /// b.sr.sprite between the two never moves the building.
+        public static Sprite GateSprite(bool open)
+        {
+            if (!open) return Get(BKind.SheepGate, 1).sprite;
+            BuildingSprite bs;
+            if (cache.TryGetValue("SheepGate_open", out bs)) return bs.sprite;
+            var d = Buildings.Get(BKind.SheepGate);
+            var c = new PixelCanvas(d.w * 16, d.h * 16 + Top, (BKind.SheepGate + "_1").GetHashCode()); // Get's seed: the same planks and shingles
+            GateHouse(c, true);
+            c.Outline(Pal.Ink);
+            Shadow(c);
+            bs = new BuildingSprite { sprite = c.ToSprite(new Vector2(0, 0)) };
+            cache["SheepGate_open"] = bs;
+            return bs.sprite;
+        }
+
+        /// a little wooden gate-house built onto a pen fence: two lamp-topped posts, a slate roof with a sheep plaque, and a big arched
+        /// double door in the pen doors' red (so it reads as a DOOR), raised on a stone plinth so it shows above the pen's fence, with
+        /// a ramp down. Open: the doors swing out and the next lamb peeks out of the dark.
+        static void GateHouse(PixelCanvas c, bool open)
+        {
+            int W = c.w, base_ = c.h - 2, mid = W / 2;
+            int sill = base_ - 8, dTop = sill - 14, wallTop = dTop - 5;
+            Color32 red = C("b0402c"), redLo = C("7e2a1e"), brace = C("ecdcb4"), dark = C("141218");
+            // plank walls on a stone plinth, under a slate roof
+            Planks(c, 3, wallTop, W - 6, sill - wallTop, Wood);
+            Bricks(c, 3, sill, W - 6, base_ - sill, Stone);
+            Roof(c, 0, wallTop - 12, W, 14, C("3a4a6a"), 1);
+            // the plaque: a white-faced sheep on the door's red
+            int py = wallTop - 6;
+            c.Ellipse(mid, py, 6.5f, 6, WoodDark); c.Ellipse(mid, py, 5.5f, 5, red);
+            c.Art(mid - 5, py - 3, "..w.ww.w..|.wwwwwwww.|sswwwwwwss|.wwkwwkww.|..wwwwww..|...wppw...|....ww....");
+            // two stout posts, each with a lamp on top
+            for (int k = 0; k < 2; k++)
+            {
+                int px = k == 0 ? 1 : W - 4, pt = wallTop - 5;
+                c.Rect(px, pt, 3, base_ - pt, WoodDark);
+                c.VLine(px + 1, pt, base_ - 1, Wood);
+                c.Rect(px - 1, pt - 1, 5, 2, WoodDark); c.HLine(px - 1, px + 3, pt - 1, C("9a7448"));
+                c.Rect(px, pt - 4, 3, 3, Lit); c.Set(px + 1, pt - 3, C("fff6c8"));
+                c.HLine(px, px + 2, pt - 5, MetalDark);
+            }
+            // the arched door frame, its sill and the ramp down
+            for (int y = dTop - 1; y < sill; y++)
+            {
+                int r = y - dTop, fw = r < 0 ? 4 : r == 0 ? 6 : r == 1 ? 7 : 8;
+                c.HLine(mid - fw, mid + fw - 1, y, WoodDark);
+            }
+            c.HLine(mid - 9, mid + 8, sill, WoodDark); c.HLine(mid - 8, mid + 7, sill, C("9a7448"));
+            for (int y = sill + 1; y < base_; y++)
+            {
+                int hw = 6 + (y - sill - 1) / 3;
+                c.HLine(mid - hw, mid + hw - 1, y, (y - sill) % 2 == 0 ? Wood : C("9a7448"));
+                c.Set(mid - hw, y, WoodDark); c.Set(mid + hw - 1, y, WoodDark);
+            }
+            for (int y = dTop; y < sill; y++)
+            {
+                int r = y - dTop, hw = r == 0 ? 4 : r == 1 ? 6 : 7;
+                for (int x = mid - hw; x < mid + hw; x++) c.Set(x, y, open ? dark : x == mid - 1 || x == mid ? Pal.Shade(red, 0.5f) : red);
+            }
+            if (!open)
+            {
+                // a cream cross-brace like the pen's own doors, and the two handles
+                c.Line(mid - 7, dTop + 2, mid + 6, sill - 1, brace); c.Line(mid + 6, dTop + 2, mid - 7, sill - 1, brace);
+                c.Set(mid - 2, sill - 4, Yellow); c.Set(mid + 1, sill - 4, Yellow);
+                return;
+            }
+            // open: the two doors swung out against the wall, and a lamb in the doorway
+            for (int k = 0; k < 2; k++)
+            {
+                int hx = k == 0 ? mid - 9 : mid + 8, dir = k == 0 ? -1 : 1;
+                for (int i = 0; i < 3; i++)
+                {
+                    int x = hx + dir * i;
+                    c.VLine(x, dTop + 1 + i, sill - 1, i == 2 ? redLo : red);
+                    c.Set(x, dTop + 4 + i, brace); c.Set(x, sill - 3, brace);
+                }
+            }
+            c.Rect(mid - 7, sill - 2, 14, 2, C("3a2e22"));
+            c.Art(mid - 4, sill - 9, ".w.ww.w.|wwwwwwww|swkwwkws|.wwwwww.|..wppw..|.lwwwwl.|llwwwwll|.k....k.|.k....k.");
+            // and a puff of dust where each door swung
+            for (int k = 0; k < 2; k++)
+            {
+                float dx = k == 0 ? mid - 10.5f : mid + 10.5f;
+                c.Ellipse(dx, sill - 0.5f, 2, 1.5f, C("c8b490")); c.Set(Mathf.FloorToInt(dx), sill - 1, C("e8dcc0"));
+            }
         }
 
         // ---------- conveyor belts & items ----------

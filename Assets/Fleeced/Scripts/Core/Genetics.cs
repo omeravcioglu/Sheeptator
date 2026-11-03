@@ -98,18 +98,25 @@ namespace Fleeced
         public bool StrainKnown(int id) { var d = Genetics.Get(id); return d != null && (!d.Hybrid || genes.Contains("known_" + d.key)); }
         public int HybridsKnown() { int n = 0; foreach (var d in Genetics.Strains) if (d != null && d.Hybrid && genes.Contains("known_" + d.key)) n++; return n; }
         public int StrainsKnown() { int n = 0; foreach (var d in Genetics.Strains) if (d != null && StrainKnown(d.id)) n++; return n; }
-        public int CountStrain(int id) { int n = 0; foreach (var s in sheep) if (!s.dead && s.act != Act.Hidden && s.strain == id) n++; return n; }
+        /// sheep of a strain: the named ones, the droves they lead and the herds
+        public int CountStrain(int id)
+        {
+            double n = 0;
+            foreach (var s in sheep) if (!s.dead && s.act != Act.Hidden && s.strain == id) { n++; if (s.drove != null) n += s.drove.n; }
+            if (id >= 0 && id < Flock.Strains) foreach (var b in buildings) if (b.herd != null) n += b.herd.Of(id);
+            return (int)System.Math.Min(int.MaxValue, n);
+        }
 
         /// settings that follow from the bought genes (after a purchase and after loading)
         public void ApplyGenes() { Sheep.LambAge = genes.Contains("quick_lambs") ? 2f : 3f; }
 
         public void ResetGenetics() { dna = 0; dnaTotal = 0; splicedTotal = 0; genes.Clear(); ApplyGenes(); }
 
-        public void GainDna(int n, Vector2 at)
+        public void GainDna(double n, Vector2 at)
         {
-            if (n <= 0) return;
-            dna += n; dnaTotal += n;
-            if (tech.Contains("genetics") && IsVisible(at)) FloatText(at + Vector2.up * 1.9f, "+" + n + " DNA", new Color(0.55f, 1f, 0.75f));
+            if (!(n >= 1)) return;
+            dna = Bump(dna, n); dnaTotal = Bump(dnaTotal, n); // a herd's droves give DNA by the thousand
+            if (tech.Contains("genetics") && IsVisible(at)) FloatText(at + Vector2.up * 1.9f, "+" + UI.Fmt(n) + " DNA", new Color(0.55f, 1f, 0.75f));
         }
 
         // ---------------- buying ----------------
@@ -126,7 +133,7 @@ namespace Fleeced
         public void BuyGene(GeneDef g)
         {
             if (GeneBlocker(g) != null) return;
-            dna -= g.dna; res[0] -= g.coins;
+            dna -= g.dna; SpendCoins(g.coins, CoinSrc.Purchase);
             if (g.needAmount > 0) res[(int)g.needRes] -= g.needAmount;
             genes.Add(g.id);
             ApplyGenes();
@@ -150,7 +157,7 @@ namespace Fleeced
         /// rare goods have to be in storage, and Markets sell whatever rides in: say how to keep some
         string NeedRare(Res r, int n)
         {
-            return "Need " + n + " " + ResInfo.Names[(int)r] + " in storage (you have " + Mathf.FloorToInt((float)res[(int)r]) + "). Markets sell whatever rides in: SHUT a Market door and it goes to storage instead.";
+            return "Need " + n + " " + ResInfo.Names[(int)r] + " in storage (you have " + System.Math.Floor(res[(int)r]).ToString("0") + "). Markets sell whatever rides in: SHUT a Market door and it goes to storage instead.";
         }
 
         public void UnlockStrain(StrainDef d)
@@ -203,25 +210,27 @@ namespace Fleeced
         /// called when a sheep has been inside the Gene Lab long enough
         void ProcessGeneLab(Building b, Sheep s)
         {
-            if (b.geneMode == Genetics.Chaos && !s.Lamb)
+            bool copy = s.Has("clone"); // a copy from the Vat is only sampled: no SPLICE, no CHAOS (its price assumed its strain)
+            double k = s.drove != null ? s.drove.n : 0; // its drove goes through with it: all of it or none of it (one strain a drove)
+            if (b.geneMode == Genetics.Chaos && !s.Lamb && !copy)
             {
-                if (dna >= 1) { dna -= 1; ChaosSplice(b, s); return; }
+                if (dna >= 1 + k) { dna -= (int)(1 + k); ChaosSplice(b, s); return; }
                 b.geneNoDnaT += 1f;
             }
             var sd = Genetics.Get(b.geneMode);
-            bool splice = sd != null && StrainUnlocked(sd.id) && s.strain != sd.id && !s.Lamb;
+            bool splice = sd != null && StrainUnlocked(sd.id) && s.strain != sd.id && !s.Lamb && !copy;
             int cost = sd != null ? SpliceCost(b, sd) : 0;
-            if (splice && dna < cost) { splice = false; b.geneNoDnaT += 1f; }
+            if (splice && dna < cost * (1 + k)) { splice = false; b.geneNoDnaT += 1f; }
             if (!splice)
             {
                 // sampling: a needle, a vial, some DNA
-                GainDna(SampleDna(b), b.Center);
+                GainDna(SampleDna(b) * (1 + k), b.Center);
                 s.tremble = Mathf.Max(s.tremble, 1f);
                 AddMod(s, "Poked with a needle", -2, 0.5f);
-                if (IsVisible(b.Center) && rng.NextDouble() < 0.25) SpeechText(b.Center + new Vector2(0.3f, 1.4f), rng.NextDouble() < 0.5 ? "ow" : "*needle*");
+                if (IsVisible(b.Center) && fxRng.NextDouble() < 0.25) SpeechText(b.Center + new Vector2(0.3f, 1.4f), fxRng.NextDouble() < 0.5 ? "ow" : "*needle*");
                 return;
             }
-            dna -= cost;
+            dna -= (int)(cost * (1 + k));
             Splice(s, sd.id, b);
         }
 
@@ -229,20 +238,27 @@ namespace Fleeced
         public void Splice(Sheep s, int strain, Building b)
         {
             var sd = Genetics.Get(strain);
-            s.strain = strain;
-            splicedTotal++;
+            s.strain = strain; // its drove's strain is its own: they are spliced with it
+            double follow = s.drove != null ? s.drove.n : 0;
+            int sp0 = splicedTotal; // the one-time lines below fire when the count passes 1 and 4 (a drove jumps past them)
+            splicedTotal = Bump(splicedTotal, 1 + follow);
             GiveXp(s, 10);
             Vector2 at = b != null ? b.Center : s.pos;
             if (sd.Hybrid && !StrainKnown(strain)) Discover(strain, "CHAOS in the Gene Lab");
             if (IsVisible(at))
             {
-                FloatText(at + Vector2.up * 1.6f, sd.shortName + "!", Pal.C(sd.color));
-                if (rng.NextDouble() < 0.5) SpeechText(at + new Vector2(0.4f, 1.2f), Genetics.Quips[rng.Next(Genetics.Quips.Length)]);
+                FloatText(at + Vector2.up * 1.6f, sd.shortName + "!" + (follow >= 1 ? " x" + UI.Fmt(follow + 1) : ""), Pal.C(sd.color));
+                if (fxRng.NextDouble() < 0.5) SpeechText(at + new Vector2(0.4f, 1.2f), Genetics.Quips[fxRng.Next(Genetics.Quips.Length)]);
                 SpawnParticles(at + Vector2.up * 0.9f, Pal.C(sd.color), 12, 2.4f);
-                Sfx.Play("zap", 0.35f, 1.2f + (float)rng.NextDouble() * 0.5f);
+                Sfx.Play("zap", 0.35f, 1.2f + (float)fxRng.NextDouble() * 0.5f);
             }
-            if (splicedTotal == 1) LeaderPop("IT WORKED. " + s.name + " is now a " + sd.name.ToUpper() + ". The ethics committee has been dissolved. Again.", LExpr.Smug, 7f);
-            else if (splicedTotal == 4) LeaderPop("Now put two DIFFERENT strains in one pen. Their lambs might be something NEW. Hybrids. Secret ones.", LExpr.Smug, 8f);
+            if (sp0 < 1 && splicedTotal >= 1) LeaderPop("IT WORKED. " + s.name + " is now a " + sd.name.ToUpper() + ". The ethics committee has been dissolved. Again.", LExpr.Smug, 7f);
+            if (sp0 < 4 && splicedTotal >= 4)
+            {
+                // a first splice with a drove passes both counts at once: the hint waits for the line above to finish
+                System.Action hint = () => LeaderPop("Now put two DIFFERENT strains in one pen. Their lambs might be something NEW. Hybrids. Secret ones.", LExpr.Smug, 8f);
+                if (sp0 < 1) AnnounceWhenFree("hybrid_hint", hint); else hint();
+            }
             // side effects
             float side = 0.08f * (HasGene("safe_splice") ? 0.3f : 1f);
             if (rng.NextDouble() >= side) return;
@@ -279,7 +295,7 @@ namespace Fleeced
             bool vis = IsVisible(at);
             float boom = HasGene("safe_splice") ? 0.025f : 0.05f;
             double r = rng.NextDouble();
-            if (vis) SpawnParticles(at + Vector2.up * 1f, Color.HSVToRGB((float)rng.NextDouble(), 0.6f, 1f), 14, 3f);
+            if (vis) SpawnParticles(at + Vector2.up * 1f, Color.HSVToRGB((float)fxRng.NextDouble(), 0.6f, 1f), 14, 3f);
             if (r < 0.45)
             {
                 // any strain at all, even the secret ones
@@ -307,9 +323,11 @@ namespace Fleeced
             if (r < 0.80)
             {
                 int n = 8 + rng.Next(8);
-                if (!Output(b, Res.Wool, n) && vis) FlyFromWorld("wool", at + Vector2.up, 3);
+                double all = n + (s.drove != null ? s.drove.n * n : 0); // the whole drove fluffs up
+                if (!Output(b, Res.Wool, (float)all) && vis) FlyFromWorld("wool", at + Vector2.up, 3);
                 s.wool = 1.25f;
-                if (vis) { FloatText(at + Vector2.up * 1.8f, "FLUFF BOMB! +" + n, new Color(1f, 1f, 0.9f)); SpawnParticles(at + Vector2.up, new Color(0.96f, 0.94f, 0.88f), 24, 4f); }
+                if (s.drove != null) s.drove.wool = 1.25f;
+                if (vis) { FloatText(at + Vector2.up * 1.8f, "FLUFF BOMB! +" + UI.Fmt(all), new Color(1f, 1f, 0.9f)); SpawnParticles(at + Vector2.up, new Color(0.96f, 0.94f, 0.88f), 24, 4f); }
                 return;
             }
             if (r < 0.87)
@@ -325,10 +343,17 @@ namespace Fleeced
             }
             // KA-BOOM: the sheep becomes wool and mutton, all at once
             int w = 12 + rng.Next(8), m = 4 + rng.Next(4);
-            if (!Output(b, Res.Wool, w) && vis) FlyFromWorld("wool", at + Vector2.up, 3);
-            if (!Output(b, Res.Mutton, m) && vis) FlyFromWorld("mutton", at + Vector2.up, 2);
-            if (vis) { FloatText(at + Vector2.up * 2.2f, "KA-BOOM!", new Color(1f, 0.45f, 0.3f)); SpawnParticles(at + Vector2.up, new Color(0.96f, 0.94f, 0.88f), 30, 5f); shake = Mathf.Max(shake, 1.2f); Sfx.Play("boom", 0.6f); }
-            GainDna(2, at);
+            double k = s.drove != null ? s.drove.n : 0; // and its drove with it
+            if (!Output(b, Res.Wool, (float)(w * (1 + k))) && vis) FlyFromWorld("wool", at + Vector2.up, 3);
+            if (!Output(b, Res.Mutton, (float)(m * (1 + k))) && vis) FlyFromWorld("mutton", at + Vector2.up, 2);
+            if (vis) { FloatText(at + Vector2.up * 2.2f, k >= 1 ? "KA-BOOM! x" + UI.Fmt(k + 1) : "KA-BOOM!", new Color(1f, 0.45f, 0.3f)); SpawnParticles(at + Vector2.up, new Color(0.96f, 0.94f, 0.88f), 30, 5f); shake = Mathf.Max(shake, 1.2f); Sfx.Play("boom", 0.6f); }
+            GainDna(2 * (1 + k), at);
+            if (k >= 1)
+            {
+                deaths = Bump(deaths, k); Ledger(-k); s.drove = null;
+                Log("^rKA-BOOM:^w " + UI.Fmt(k) + " of the herd went up with " + s.name + ".");
+                if (s.strain == Genetics.Phoenix) HerdRebirths(s.pen, k); // a Phoenix drove rises from that too
+            }
             Kill(s, "Exploded in the Gene Lab's CHAOS mode. Into wool. And mutton.");
         }
 
@@ -356,7 +381,12 @@ namespace Fleeced
 
         /// Phoenix deaths waiting for their rebirth (handled at the start of the next tick, never in the middle of a loop over the flock)
         readonly List<Sheep> phoenixQueue = new List<Sheep>();
-        void QueueRebirth(Sheep s) { if (s.strain == Genetics.Phoenix && !phoenixQueue.Contains(s)) phoenixQueue.Add(s); }
+        void QueueRebirth(Sheep s)
+        {
+            if (s.strain != Genetics.Phoenix || phoenixQueue.Contains(s)) return;
+            if (s.Has("clone")) { Log("^k" + s.name + " was a copy. Copies do not rise again."); return; } // or the Vat would print coins
+            phoenixQueue.Add(s);
+        }
         void ProcessRebirths()
         {
             if (phoenixQueue.Count == 0) return;
@@ -371,6 +401,9 @@ namespace Fleeced
             if (s.strain != Genetics.Phoenix || rng.NextDouble() >= 0.6) return;
             var pen = s.pen != null && buildings.Contains(s.pen) && IsPen(s.pen) ? s.pen : FirstPen();
             if (pen == null) return;
+            // one capacity rule for every new sheep: a full farm has no room to rise in
+            if (Members(pen) >= RoomCapacity(pen) || Population >= FlockCap) { Log("^o" + s.name + " tried to rise from the ashes,^w but the pens are full."); return; }
+            if (!CanName(pen)) { HerdAddLambs(pen, Genetics.Phoenix, 1); births = Bump(births, 1); Ledger(1); Log("^o" + s.name + " rose from the ashes^w into the herd. Nameless, this time."); return; }
             var inner = PenInterior(pen);
             var lamb = CreateSheep(inner.center, null, null, s.male);
             usedNames.Remove(lamb.name);
@@ -381,7 +414,7 @@ namespace Fleeced
             lamb.traits = new List<string>(s.traits);
             lamb.parents = s.name + " (reborn from the ashes)";
             lamb.pen = pen;
-            births++;
+            births = Bump(births, 1);
             if (IsVisible(inner.center))
             {
                 FloatText(inner.center + Vector2.up * 1.4f, "REBORN!", new Color(1f, 0.55f, 0.2f));
@@ -411,8 +444,15 @@ namespace Fleeced
                     foreach (var o in sheep)
                         if (o != s && !o.dead && o.pen == s.pen && rng.NextDouble() < 0.3) { AddMod(o, "Zapped by " + s.name, -3, 1f); o.tremble = 2f; if (IsVisible(o.pos)) FloatText(o.pos + Vector2.up * 1.3f, "ZAP", new Color(1f, 0.95f, 0.4f)); break; }
                 }
-                else if (s.strain == Genetics.Splitter && rng.NextDouble() < 0.12 && s.pen.penMembers < RoomCapacity(s.pen) && Population < popCap)
+                else if (s.strain == Genetics.Splitter && !s.Has("clone") && rng.NextDouble() < 0.12 && Members(s.pen) < RoomCapacity(s.pen) && Population < FlockCap) // copies do not split
                 {
+                    if (!CanName(s.pen)) // no name left for the other half: it joins the herd, with half the fleece and an empty udder
+                    {
+                        HerdAddAdults(s.pen, s.male, Genetics.Splitter, 1, s.wool * 0.5f, 0f, s.hunger);
+                        s.wool *= 0.5f; births = Bump(births, 1); Ledger(1);
+                        if (IsVisible(s.pos)) FloatText(s.pos + Vector2.up * 1.5f, "MITOSIS!", Pal.C(Genetics.Get(Genetics.Splitter).color));
+                        continue;
+                    }
                     var c = CreateSheep(s.pos + new Vector2(0.4f, 0f), null, null, s.male);
                     c.strain = Genetics.Splitter;
                     c.traits = new List<string>(s.traits);
@@ -421,11 +461,12 @@ namespace Fleeced
                     c.wool = s.wool * 0.5f; s.wool *= 0.5f;
                     c.parents = s.name + " (split)";
                     c.pen = s.pen;
-                    births++;
+                    births = Bump(births, 1);
                     if (IsVisible(s.pos)) { FloatText(s.pos + Vector2.up * 1.5f, "MITOSIS!", Pal.C(Genetics.Get(Genetics.Splitter).color)); SpawnParticles(s.pos + Vector2.up * 0.5f, new Color(0.8f, 0.7f, 1f), 12, 2f); }
                     Log("^p" + s.name + " split in two.^w Meet " + c.name + ". Same sheep. Different sheep.");
                 }
             }
+            DailyHerdStrains();
         }
 
         // ---------------- what strains do ----------------
@@ -468,9 +509,18 @@ namespace Fleeced
         void StrainGlobals()
         {
             int sparky = 0, wolves = 0;
-            foreach (var s in sheep) { if (s.dead || s.act == Act.Hidden) continue; if (s.strain == Genetics.Sparky) sparky++; else if (s.strain == Genetics.Wolf) wolves++; }
+            double hs = 0, hw = 0; // in herds and droves
+            foreach (var s in sheep)
+            {
+                if (s.dead || s.act == Act.Hidden) continue;
+                if (s.strain == Genetics.Sparky) { sparky++; if (s.drove != null) hs += s.drove.n; }
+                else if (s.strain == Genetics.Wolf) { wolves++; if (s.drove != null) hw += s.drove.n; }
+            }
+            foreach (var b in buildings) if (b.herd != null) { hs += b.herd.Of(Genetics.Sparky); hw += b.herd.Of(Genetics.Wolf); }
             powerMade += sparky * 3f;
             guardPower += wolves * 1.5f;
+            if (hs > 0) powerMade += (float)(hs * 3);
+            if (hw > 0) guardPower += (float)(hw * 1.5);
         }
 
         // ---------------- the bubbling tank ----------------
@@ -502,7 +552,7 @@ namespace Fleeced
             sr.sprite = EnvArt.Goo(col, frame, tw - 2, th - 3, bright);
             sr.transform.localPosition = new Vector3((tx + 1) / 16f, (H - top) / 16f, 0);
             sr.sortingOrder = b.sr.sortingOrder + 1;
-            if (busy && IsVisible(b.Center) && rng.NextDouble() < Time.deltaTime * 4) SpawnParticles(new Vector2(b.x + (tx + tw / 2f) / 16f, b.y + (H - top + th) / 16f), (Color)col, 1, 1.4f);
+            if (busy && IsVisible(b.Center) && fxRng.NextDouble() < Time.deltaTime * 4) SpawnParticles(new Vector2(b.x + (tx + tw / 2f) / 16f, b.y + (H - top + th) / 16f), (Color)col, 1, 1.4f);
         }
 
         // ---------------- rare goods for big upgrades ----------------

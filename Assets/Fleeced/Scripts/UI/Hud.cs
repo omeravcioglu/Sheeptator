@@ -3,7 +3,7 @@ using UnityEngine;
 
 namespace Fleeced
 {
-    public enum Panel { None, Build, Sheep, Jobs, Research, Market, Map, Genetics }
+    public enum Panel { None, Build, Sheep, Jobs, Research, Market, Map, Genetics, Upgrades }
 
     public partial class Game
     {
@@ -54,6 +54,7 @@ namespace Fleeced
 
         void OnGUI()
         {
+            if (inert) return; // replaced next frame
             float s = UI.scale;
             GUI.matrix = Matrix4x4.Scale(new Vector3(s, s, 1));
             W = Screen.width / s; H = Screen.height / s;
@@ -87,6 +88,7 @@ namespace Fleeced
                 case Panel.Sheep: DrawSheepPanel(); break;
                 case Panel.Jobs: DrawFactoryPanel(); break;
                 case Panel.Genetics: DrawGeneticsPanel(); break;
+                case Panel.Upgrades: DrawUpgradesPanel(); break;
                 case Panel.Research: DrawResearchPanel(); break;
                 case Panel.Market: DrawMarketPanel(); break;
                 case Panel.Map: DrawMapPanel(); break;
@@ -94,6 +96,7 @@ namespace Fleeced
             if (selSheep != null && !selSheep.dead) DrawSheepInspector(selSheep);
             else if (selBuilding != null && buildings.Contains(selBuilding)) DrawBuildingInspector(selBuilding);
             DrawPlacementHint();
+            DrawGateHud(); // over the log and the hint, under toasts, banners and the Leader
             DrawToast();
             DrawAutosaveNote();
             DrawBanners();
@@ -188,14 +191,24 @@ namespace Fleeced
         }
 
         // ---------------- top bar ----------------
-        float Chip(float x, string icon, string v, string sub, string tip, Color? vcol = null)
+        static readonly string[] SpeedIcons = { "pause", "play", "ff", "fff" }, SpeedMarks = { "speed_0", "speed_1", "speed_2", "speed_3" };
+        /// the goods that get a chip once the farm holds or has made some, in this order
+        static readonly int[] ChipRes = { 10, 11, 13, 12, 14, 15, 16, 2, 9, 3, 4, 5, 6 };
+        static readonly Dictionary<string, string> chipMarkIds = new Dictionary<string, string>(); // "chip_" + icon, built once per icon
+        int dateDay = int.MinValue; string dateText, yearText; // the date as the top bar shows it, rebuilt when the day changes
+
+        /// One top bar chip at x, which it moves past the chip. Returns true when the chip is drawn and under the mouse:
+        /// only then does the caller build its tooltip.
+        bool Chip(ref float x, string icon, string v, string sub, Color? vcol = null)
         {
             float w = Mathf.Max(46, 18 + Mathf.Max(PixelFont.Width(v), PixelFont.Width(sub)) + 9);
-            if (x + w > chipLimit) return x;
+            if (x + w > chipLimit) return false;
             var r = new Rect(x, 0, w, TopH - 2);
-            UI.Tip(r, tip);
-            if (UI.Hover(r)) UI.Fill(r, new Color(1, 1, 1, 0.05f));
-            UI.Mark("chip_" + icon, r);
+            bool hover = UI.Hover(r);
+            if (hover) UI.Fill(r, new Color(1, 1, 1, 0.05f));
+            string id;
+            if (!chipMarkIds.TryGetValue(icon, out id)) { id = "chip_" + icon; chipMarkIds[icon] = id; }
+            UI.Mark(id, r);
             float pu = ChipPulse(icon);
             if (pu > 0) UI.Fill(r, new Color(1f, 0.86f, 0.35f, Mathf.Min(0.45f, pu * 1.4f)));
             var t = Icons.Tex(icon);
@@ -203,7 +216,8 @@ namespace Fleeced
             PixelFont.Draw(x + 18, 5, v, vcol ?? UI.Text);
             PixelFont.Draw(x + 18, 16, sub, UI.Dim);
             UI.Fill(new Rect(x + w - 1, 5, 1, 17), UI.Bg);
-            return x + w;
+            x += w;
+            return hover;
         }
 
         bool IsFull(Res r) { return res[(int)r] >= CapOf(r) - 0.5f; }
@@ -222,16 +236,21 @@ namespace Fleeced
             rx -= 22;
             if (UI.IconButton(new Rect(rx - 20, 3, 20, 20), Sfx.muted ? "mute" : "speaker", true, Sfx.muted ? "Sound off" : "Sound on")) Sfx.muted = !Sfx.muted;
             rx -= 28;
-            string[] ic = { "pause", "play", "ff", "fff" };
             for (int i = 3; i >= 0; i--)
             {
                 float bw = i == 3 ? 24 : 20;
-                UI.Mark("speed_" + i, new Rect(rx - bw, 3, bw, 20));
-                if (UI.IconButton(new Rect(rx - bw, 3, bw, 20), ic[i], true, i == 0 ? "Pause [Space]" : "Speed x" + Speeds[i] + " [" + i + "]", speed == i)) speed = i;
+                var br = new Rect(rx - bw, 3, bw, 20);
+                UI.Mark(SpeedMarks[i], br);
+                string tip = UI.Hover(br) ? (i == 0 ? "Pause [P]" : "Speed x" + Speeds[i] + " [" + i + "]") : null; // only a hovered button shows it
+                if (UI.IconButton(br, SpeedIcons[i], true, tip, speed == i)) speed = i;
                 rx -= bw + 2;
             }
             rx -= 8;
-            string d1 = DateString().ToUpper(), d2 = "Year " + Year;
+            // From here on the top bar only draws and sets tooltips, and only a Repaint shows either: every other event stops
+            // here, so the date, Population, AvgMood and the chip texts are worked out once a frame.
+            if (!UI.Repaint) return;
+            if (dateDay != dayIndex) { dateDay = dayIndex; dateText = DateString().ToUpper(); yearText = "Year " + Year; }
+            string d1 = dateText, d2 = yearText;
             float d2w = PixelFont.Width(d2);
             float dw = Mathf.Max(PixelFont.Width(d1), d2w + 4 + 26);
             float dx = rx - dw;
@@ -245,32 +264,40 @@ namespace Fleeced
             UI.Fill(UI.Inset(track, 1), UI.Bg);
             bool night = tod > 0.72f || tod < 0.12f;
             UI.Fill(new Rect(Mathf.Round(track.x + 1 + (track.width - 5) * tod), track.y + 1, 3, 5), night ? UI.Dim : UI.Gold);
-            UI.Tip(new Rect(dx - 15, 0, dw + 15, TopH), Seasons[Season].ToUpper() + "\n" + SeasonTip());
+            var dr = new Rect(dx - 15, 0, dw + 15, TopH);
+            if (UI.Hover(dr)) UI.Tip(dr, Seasons[Season].ToUpper() + "\n" + SeasonTip());
             chipLimit = dx - 22;
 
-            // left side: resources
+            // left side: resources. Chip says whether it is hovered, and only then is its tooltip built.
             float x = 2;
             bool wFull = IsFull(Res.Wool), fFull = IsFull(Res.Food);
-            x = Chip(x, "coin", UI.Fmt(res[0]), UI.Rate(rate[0] * 60), "COINS\n" + ResInfo.Desc[0]);
-            x = Chip(x, "wool", UI.Fmt(res[1]), wFull ? "^rFULL" : UI.Rate(rate[1] * 60), "WOOL (" + UI.Fmt(res[1]) + "/" + UI.Fmt(storageCap) + ")\n" + ResInfo.Desc[1] + "\nFluffy sheep ride the conveyor through a Shearing Machine." + (wFull ? "\n^rStorage is full. Sell wool or build a Storage Shed." : ""), wFull ? UI.Bad : (Color?)null);
+            if (Chip(ref x, "coin", UI.Fmt(res[0]), UI.Rate(rate[0] * 60)))
+                UI.tooltip = "COINS\n" + ResInfo.Desc[0] + "\n" + CoinTierText();
+            if (Chip(ref x, "wool", UI.Fmt(res[1]), wFull ? "^rFULL" : UI.Rate(rate[1] * 60), wFull ? UI.Bad : (Color?)null))
+                UI.tooltip = "WOOL (" + UI.Fmt(res[1]) + "/" + UI.Fmt(storageCap) + ")\n" + ResInfo.Desc[1] + "\nFluffy sheep ride the conveyor through a Shearing Machine." + (wFull ? "\n^rStorage is full. Sell wool or build a Storage Shed." : "");
             bool mFull = IsFull(Res.Milk);
-            x = Chip(x, "milk", UI.Fmt(res[(int)Res.Milk]), mFull ? "^rFULL" : UI.Rate(rate[(int)Res.Milk] * 60), "MILK (" + UI.Fmt(res[(int)Res.Milk]) + "/" + UI.Fmt(storageCap) + ")\n" + ResInfo.Desc[(int)Res.Milk] + "\nEwes with a full (pink) udder ride through a Milking Machine." + (mFull ? "\n^rStorage is full. Sell milk or make cheese." : ""), mFull ? UI.Bad : (Color?)null);
-            x = Chip(x, "food", UI.Fmt(res[7]), fFull ? "^yFULL" : UI.Rate(rate[7] * 60), "FOOD (" + UI.Fmt(res[7]) + "/" + UI.Fmt(CapOf(Res.Food)) + ")\n" + ResInfo.Desc[7] + "\nFarms grow it by themselves. Feeding Lots feed it to the sheep (about 4 a day each).");
-            int pop = Population;
-            x = Chip(x, "flock", pop + "/" + popCap, pop > popCap ? "^rcrowded" : "^kflock", "POPULATION\nSheep / space in your Breeding Pens. Lambs are only born while there is room: upgrade or build pens to grow.", pop > popCap ? UI.Bad : (Color?)null);
+            if (Chip(ref x, "milk", UI.Fmt(res[(int)Res.Milk]), mFull ? "^rFULL" : UI.Rate(rate[(int)Res.Milk] * 60), mFull ? UI.Bad : (Color?)null))
+                UI.tooltip = "MILK (" + UI.Fmt(res[(int)Res.Milk]) + "/" + UI.Fmt(storageCap) + ")\n" + ResInfo.Desc[(int)Res.Milk] + "\nEwes with a full (pink) udder ride through a Milking Machine." + (mFull ? "\n^rStorage is full. Sell milk or make cheese." : "");
+            if (Chip(ref x, "food", UI.Fmt(res[7]), fFull ? "^yFULL" : UI.Rate(rate[7] * 60)))
+                UI.tooltip = "FOOD (" + UI.Fmt(res[7]) + "/" + UI.Fmt(CapOf(Res.Food)) + ")\n" + ResInfo.Desc[7] + "\nFarms grow it by themselves. Feeding Lots feed it to the sheep (about 4 a day each).";
+            double pop = Population;
+            if (Chip(ref x, "flock", UI.Fmt(pop) + "/" + UI.Fmt(popCap), pop > popCap ? "^rcrowded" : "^kflock", pop > popCap ? UI.Bad : (Color?)null))
+                UI.tooltip = "POPULATION\nSheep / space in your Breeding Pens. Lambs are only born while there is room: upgrade or build pens to grow." + FlockTip();
             float hm = AvgMood();
-            x = Chip(x, hm >= 60 ? "happy" : hm >= 35 ? "meh" : "sad", Mathf.RoundToInt(hm) + "%", UI.Rate(happinessRate * 60), "HAPPINESS\nAverage flock mood. Low mood = slow work, strikes, escapes. High mood = faster work and breeding.");
-            foreach (int i in new[] { 10, 11, 13, 12, 14, 15, 16, 2, 9, 3, 4, 5, 6 })
+            if (Chip(ref x, hm >= 60 ? "happy" : hm >= 35 ? "meh" : "sad", Mathf.RoundToInt(hm) + "%", UI.Rate(happinessRate * 60)))
+                UI.tooltip = "HAPPINESS\nAverage flock mood. Low mood = slow work, strikes, escapes. High mood = faster work and breeding.";
+            foreach (int i in ChipRes)
             {
                 if (res[i] < 0.5 && totalMade[i] < 0.5) continue;
-                x = Chip(x, ResInfo.Icon[i], UI.Fmt(res[i]), UI.Rate(rate[i] * 60), ResInfo.Names[i].ToUpper() + " (" + UI.Fmt(res[i]) + "/" + UI.Fmt(storageCap) + ")\n" + ResInfo.Desc[i] + "\nSells for " + SellPrice((Res)i).ToString("0.0") + "c");
+                if (Chip(ref x, ResInfo.Icon[i], UI.Fmt(res[i]), UI.Rate(rate[i] * 60)))
+                    UI.tooltip = ResInfo.Names[i].ToUpper() + " (" + UI.Fmt(res[i]) + "/" + UI.Fmt(storageCap) + ")\n" + ResInfo.Desc[i] + "\nSells for " + SellPrice((Res)i).ToString("0.0") + "c";
             }
-            if (HasBuilding(BKind.Lab) || rpPool > 0)
-                x = Chip(x, "research", UI.Fmt(rpPool), currentResearch == null ? "^ridle!" : "^bRP", "RESEARCH POINTS\nUnspent RP. Pick a research project in the Research panel [R].");
-            if (tech.Contains("genetics") || dna > 0)
-                x = Chip(x, "dna", dna.ToString(), "^pDNA", "DNA\nA Gene Lab in SAMPLE mode collects 1 per sheep that rides through. The Slaughterhouse gives 1 per sheep (3 for special ones).\nSpend it in GENETICS [N].");
-            if (powerNeed > 0 || powerMade > 0)
-                x = Chip(x, "power", Mathf.RoundToInt(powerMade) + "/" + Mathf.RoundToInt(powerNeed), powerFactor < 0.99f ? "^rlow" : "^gok", "POWER made / needed\nSheep running in Power Wheels make power. Lv3 buildings and the Wool Plant need it.");
+            if ((HasBuilding(BKind.Lab) || rpPool > 0) && Chip(ref x, "research", UI.Fmt(rpPool), currentResearch == null ? "^ridle!" : "^bRP"))
+                UI.tooltip = "RESEARCH POINTS\nUnspent RP. Pick a research project in the Research panel [R].";
+            if ((tech.Contains("genetics") || dna > 0) && Chip(ref x, "dna", dna.ToString(), "^pDNA"))
+                UI.tooltip = "DNA\nA Gene Lab in SAMPLE mode collects 1 per sheep that rides through. The Slaughterhouse gives 1 per sheep (3 for special ones).\nSpend it in GENETICS [N].";
+            if ((powerNeed > 0 || powerMade > 0) && Chip(ref x, "power", Mathf.RoundToInt(powerMade) + "/" + Mathf.RoundToInt(powerNeed), powerFactor < 0.99f ? "^rlow" : "^gok"))
+                UI.tooltip = "POWER made / needed\nSheep running in Power Wheels make power. Lv3 buildings and the Wool Plant need it.";
         }
 
         string SeasonTip()
@@ -285,34 +312,37 @@ namespace Fleeced
         }
 
         // ---------------- nav ----------------
+        static readonly string[] NavLabels = { "BUILD", "FLOCK", "FACTORY", "UPGRADES", "GENETICS", "RESEARCH", "MARKET", "MAP" };
+        static readonly string[] NavIcons = { "hammer", "flock", "chart", "star", "dna", "research", "bag", "map" };
+        static readonly string[] NavKeys = { "B", "F", "O", "U", "N", "R", "T", "M" };
+        static readonly string[] NavTips =
+        {
+            "BUILD\nRooms, machines, farms, markets and worse.",
+            "THE FLOCK\nEvery sheep, the memorial and the full log.",
+            "FACTORY\nYesterday's numbers: lambs born vs. sheep lost, food grown vs. eaten, what every machine did.",
+            "UPGRADES\nUpgrade paths for the Sheep Gate, pens, machines and more. x1, x10, x25, x100 or MAX at a time.",
+            "GENETICS\nSpend DNA on breeding upgrades and new STRAINS of sheep: Silk, Cream, Jumbo, Gold, Glow.",
+            "RESEARCH\nScience. Explosions are part of it.",
+            "MARKET\nSell goods, buy food, buy sheep.",
+            "MAP & STATS\nLand, saving, and grim statistics.",
+        };
+        static readonly Panel[] NavPanels = { Panel.Build, Panel.Sheep, Panel.Jobs, Panel.Upgrades, Panel.Genetics, Panel.Research, Panel.Market, Panel.Map };
+        static readonly string[] NavIds = { "build", "flock", "jobs", "upgrades", "genetics", "research", "market", "map" };
+        static readonly string[] NavMarks = System.Array.ConvertAll(NavIds, id => "nav_" + id); // below NavIds: a file initializes its statics in order
+
         void DrawNav()
         {
-            string[] labels = { "BUILD", "FLOCK", "FACTORY", "GENETICS", "RESEARCH", "MARKET", "MAP" };
-            string[] icons = { "hammer", "flock", "chart", "dna", "research", "bag", "map" };
-            string[] keys = { "B", "F", "O", "N", "R", "T", "M" };
-            string[] tips =
-            {
-                "BUILD\nRooms, machines, farms, markets and worse.",
-                "THE FLOCK\nEvery sheep, the memorial and the full log.",
-                "FACTORY\nYesterday's numbers: lambs born vs. sheep lost, food grown vs. eaten, what every machine did.",
-                "GENETICS\nSpend DNA on breeding upgrades and new STRAINS of sheep: Silk, Cream, Jumbo, Gold, Glow.",
-                "RESEARCH\nScience. Explosions are part of it.",
-                "MARKET\nSell goods, buy food, buy sheep.",
-                "MAP & STATS\nLand, saving, and grim statistics.",
-            };
-            Panel[] ps = { Panel.Build, Panel.Sheep, Panel.Jobs, Panel.Genetics, Panel.Research, Panel.Market, Panel.Map };
-            string[] ids = { "build", "flock", "jobs", "genetics", "research", "market", "map" };
             int k = 0;
-            for (int i = 0; i < labels.Length; i++)
+            for (int i = 0; i < NavLabels.Length; i++)
             {
-                if (!UiOn(ids[i]) || ids[i] == "genetics" && !tech.Contains("genetics")) continue;
+                if (!UiOn(NavIds[i]) || NavIds[i] == "genetics" && !tech.Contains("genetics")) continue;
                 var r = new Rect(NavX, NavY + k * (NavH + 4), NavW, NavH);
                 k++;
-                UI.Mark("nav_" + ids[i], r);
+                UI.Mark(NavMarks[i], r);
                 UI.Block(r);
-                bool sel = panel == ps[i];
-                if (UI.ButtonEx(r, labels[i], icons[i], keys[i], true, tips[i], sel ? BtnStyle.Primary : BtnStyle.Normal, true)) TogglePanel(ps[i]);
-                bool alert = ps[i] == Panel.Research && HasBuilding(BKind.Lab) && currentResearch == null;
+                bool sel = panel == NavPanels[i];
+                if (UI.ButtonEx(r, NavLabels[i], NavIcons[i], NavKeys[i], true, NavTips[i], sel ? BtnStyle.Primary : BtnStyle.Normal, true)) TogglePanel(NavPanels[i]);
+                bool alert = NavPanels[i] == Panel.Research && HasBuilding(BKind.Lab) && currentResearch == null;
                 if (alert && !sel)
                 {
                     UI.Fill(new Rect(r.x + 11, r.y + 2, 6, 6), UI.Ink);
@@ -328,50 +358,6 @@ namespace Fleeced
         }
 
         // ---------------- objective / log / toasts ----------------
-        void DrawObjective()
-        {
-            float left = FreeLeft, right = FreeRight;
-            float avail = right - left;
-            if (avail < 150) return;
-            var o = CurrentObjective;
-            string tier = "~ " + TierName().ToUpper() + " ~";
-            string goal = o == null ? "^gAll goals complete. Keep the flock going." : "Goal: " + o.text;
-            string prog = o != null && o.progress != null ? o.progress(this) : null;
-            string reward = o != null && o.reward > 0 ? "+" + o.reward : null;
-            float rw = reward != null ? PixelFont.Width(reward) + 13 : 0;
-            float ratio = -1;
-            if (prog != null)
-            {
-                int slash = prog.IndexOf('/');
-                float a, b;
-                if (slash > 0 && float.TryParse(prog.Substring(0, slash), out a) && float.TryParse(prog.Substring(slash + 1), out b) && b > 0) ratio = Mathf.Clamp01(a / b);
-                else goal += " ^k(" + prog + ")";
-            }
-            float want = Mathf.Max(PixelFont.Width(goal) + rw + 24, PixelFont.Width(tier) + 20);
-            float w = Mathf.Round(Mathf.Clamp(want, 180, Mathf.Min(avail, 340)));
-            float tw = w - 16 - (rw > 0 ? rw + 6 : 0);
-            var lines = PixelFont.Wrap(goal, tw, 1);
-            float h = 6 + 8 + 4 + lines.Count * 10 + (ratio >= 0 ? 10 : 0) + 3;
-            float cx = Mathf.Clamp(W / 2, left + w / 2, right - w / 2);
-            var r = new Rect(Mathf.Round(cx - w / 2), TopH + 6, w, h);
-            UI.Block(r);
-            UI.Box(r, UI.BgDark, UI.Edge);
-            PixelFont.DrawAligned(new Rect(r.x, r.y + 5, r.width, 8), tier, UI.Gold, 1, 1);
-            float y = r.y + 18;
-            foreach (var l in lines) { PixelFont.Draw(r.x + 8, y, l, UI.Text); y += 10; }
-            if (reward != null)
-            {
-                float rx = r.xMax - 8 - rw;
-                PixelFont.Draw(rx, r.y + 18, reward, UI.Gold);
-                UI.Icon(rx + rw - 9, r.y + 17, "coin");
-            }
-            if (ratio >= 0)
-            {
-                float pw = PixelFont.Width(prog);
-                UI.Bar(new Rect(r.x + 8, y + 1, r.width - 16 - pw - 6, 6), ratio, UI.Gold);
-                PixelFont.Draw(r.xMax - 8 - pw, y, prog, UI.Dim);
-            }
-        }
 
         float logTop;
 
@@ -473,13 +459,41 @@ namespace Fleeced
             }
         }
 
-        bool titleChecked, titleHasSave, titleSaveOld; string titleSaveInfo = "";
+        bool titleChecked, titleHasSave, titleSaveOld, titleSaveNewer; string titleSaveInfo = "", titleBackupPath, titleBackupInfo;
+        /// What the title offers for the save on disk: CONTINUE (a current save), CONTINUE OLD SAVE (before version 4),
+        /// CONTINUE from the backup (a damaged save with a readable .bak), or only a notice (a newer version's save,
+        /// or a damaged save with no backup).
         void CheckTitleSave()
         {
             if (titleChecked) return;
             titleChecked = true;
             titleHasSave = HasSave;
-            if (titleHasSave) { titleSaveInfo = SaveSummary(); titleSaveOld = SaveVersion() < 4; }
+            if (!titleHasSave) { titleBackupPath = FindBackup(out titleBackupInfo); return; }
+            string text;
+            try { text = System.IO.File.ReadAllText(SavePath); }
+            catch { titleSaveInfo = "saved game"; return; } // held open for a moment: CONTINUE stays, and loading reads it again
+            // the version written at the start of the file decides "newer", as it does for loading and saving, even when
+            // the rest of the file is unreadable
+            if (NeedOf(text) > CurrentSaveVersion)
+            {
+                titleSaveNewer = true; titleSaveInfo = "saved by a newer version";
+                if (titleNotice == null) titleNotice = NewerSaveNotice;
+                titleBackupPath = FindBackup(out titleBackupInfo); // nothing to CONTINUE: offer a backup
+                return;
+            }
+            SaveData d = null;
+            try { d = JsonUtility.FromJson<SaveData>(text); } catch { }
+            if (d != null && d.res != null && !failedLoads.Contains(Fnv(text)))
+            {
+                titleSaveInfo = Summary(d);
+                titleSaveOld = d.version < 4;
+                return;
+            }
+            // damaged, or it already failed to load this run
+            if (BackupReadable()) titleSaveInfo = "Damaged: CONTINUE loads backup";
+            else { titleHasSave = false; if (titleNotice == null) titleNotice = "Your save is damaged and can't be loaded. A new game keeps a copy of it."; }
+            // nothing to CONTINUE: offer the newest backup this version can read
+            if (!titleHasSave) titleBackupPath = FindBackup(out titleBackupInfo);
         }
 
         void DrawAutosaveNote()
@@ -528,6 +542,9 @@ namespace Fleeced
         }
 
         // ---------------- title / help ----------------
+        /// the NUMBERS option: named (4.5B) or scientific (4.50e9), kept across restarts
+        public static void SetScientific(bool on) { Num.Scientific = on; PlayerPrefs.SetInt("numbers", on ? 1 : 0); PlayerPrefs.Save(); }
+
         void DrawTitle()
         {
             UI.Fill(new Rect(0, 0, W, H), new Color(0.11f, 0.09f, 0.19f, 0.62f));
@@ -545,9 +562,10 @@ namespace Fleeced
 
             bool save = titleHasSave && !titleSaveOld;
             bool oldSave = titleHasSave && titleSaveOld;
-            int n = save || oldSave ? 5 : 4;
+            int n = (save || oldSave ? 5 : 4) + (titleBackupPath != null ? 1 : 0);
             float bw = 190, bh = 20, gap = 4;
-            float ph = 20 + n * bh + (n - 1) * gap + (save || oldSave ? 12 : 0);
+            float nh = titleNotice != null ? PixelFont.WrappedHeight(titleNotice, bw) + 6 : 0; // a failed or refused load says why
+            float ph = 20 + n * bh + (n - 1) * gap + (save || oldSave ? 12 : 0) + nh;
             var pr = new Rect(Mathf.Round(W / 2 - (bw + 20) / 2), Mathf.Round(Mathf.Min(y, H - 28 - ph)), bw + 20, ph);
             // mascots: a hopeful sheep and a less hopeful one
             float ps = Mathf.Max(2, Mathf.Floor(H / 150f));
@@ -573,15 +591,20 @@ namespace Fleeced
             }
             UI.Panel(pr, null);
             float bx = pr.x + 10, by = pr.y + 10;
+            if (titleNotice != null)
+            {
+                PixelFont.DrawWrapped(new Rect(bx, by, bw, nh), titleNotice, UI.Bad);
+                by += nh;
+            }
             if (save)
             {
-                if (UI.ButtonEx(new Rect(bx, by, bw, bh), "CONTINUE", null, "ENTER", true, titleSaveInfo, BtnStyle.Primary)) { LoadGame(); return; }
+                if (UI.ButtonEx(new Rect(bx, by, bw, bh), "CONTINUE", null, "ENTER", !titleSaveNewer, titleSaveNewer ? "CONTINUE\n" + NewerSaveNotice : titleSaveInfo, BtnStyle.Primary)) { LoadGame(); return; }
                 by += bh + 2;
                 PixelFont.DrawAligned(new Rect(bx, by, bw, 9), "^k" + Trunc(titleSaveInfo, 32), UI.Dim, 1, 1);
                 by += 12;
-                if (UI.Button(new Rect(bx, by, bw, bh), "NEW GAME", true, "Start over. Your autosave will be overwritten tomorrow.")) { StartGame(); return; }
+                if (UI.Button(new Rect(bx, by, bw, bh), "NEW GAME", true, "Start over. Your current save is archived first.")) { StartGame(); return; }
             }
-            else if (UI.ButtonEx(new Rect(bx, by, bw, bh), "BEGIN", null, "ENTER", true, oldSave ? "BEGIN\nA new flock, with the Supreme Leader's tutorial." : null, BtnStyle.Primary)) { StartGame(); return; }
+            else if (UI.ButtonEx(new Rect(bx, by, bw, bh), "BEGIN", null, "ENTER", true, oldSave ? "BEGIN\nA new flock, with the Supreme Leader's tutorial. Your old save is archived first." : null, BtnStyle.Primary)) { StartGame(); return; }
             if (oldSave)
             {
                 by += bh + 2;
@@ -589,18 +612,29 @@ namespace Fleeced
                 by += 12;
                 if (UI.Button(new Rect(bx, by, bw, bh), "CONTINUE OLD SAVE", true, "CONTINUE OLD SAVE\n" + titleSaveInfo + "\nNo tutorial: the Supreme Leader assumes you know what you are doing.")) { LoadGame(); return; }
             }
+            if (titleBackupPath != null)
+            {
+                by += bh + gap;
+                if (UI.Button(new Rect(bx, by, bw, bh), "LOAD BACKUP", true, "LOAD BACKUP\n" + titleBackupInfo + "\nThe save on disk is archived before anything replaces it.")) { LoadBackup(titleBackupPath); return; }
+            }
             by += bh + gap;
             if (UI.ButtonEx(new Rect(bx, by, bw, bh), "HOW TO PLAY", null, "H")) showHelp = true;
             by += bh + gap;
-            if (UI.ButtonEx(new Rect(bx, by, bw, bh), Sfx.muted ? "SOUND: OFF" : "SOUND: ON", Sfx.muted ? "mute" : "speaker")) Sfx.muted = !Sfx.muted;
+            float hw = (bw - gap) / 2f;
+            if (UI.ButtonEx(new Rect(bx, by, hw, bh), Sfx.muted ? "SOUND: OFF" : "SOUND: ON", Sfx.muted ? "mute" : "speaker")) Sfx.muted = !Sfx.muted;
+            if (UI.Button(new Rect(bx + hw + gap, by, hw, bh), Num.Scientific ? "NUM: 1.2e9" : "NUM: 1.2B", true,
+                "NUMBERS\nHow big numbers are written: named (4.5B, 6.7Qa) or scientific (4.50e9).")) SetScientific(!Num.Scientific);
             by += bh + gap;
             if (UI.Button(new Rect(bx, by, bw, bh), "QUIT")) Application.Quit();
 
             var fr = new Rect(0, H - 20, W, 20);
             UI.Fill(fr, new Color(0.07f, 0.055f, 0.047f, 0.85f));
             UI.Fill(new Rect(0, fr.y, W, 1), UI.Hi);
-            PixelFont.Draw(8, fr.y + 7, "WASD/drag: move   Scroll: zoom   Click: select   Space: pause   H: help", UI.Dim);
-            string fb = "FESTIVAL BUILD";
+            PixelFont.Draw(8, fr.y + 7, "WASD/drag: move   Scroll: zoom   Click: select   P: pause   H: help", UI.Dim);
+            string fb = TitleFooter;
+#if FLEECED_DEV
+            DevTitleFooterDrawn = fb; // the label as the title draws it, for the harness
+#endif
             PixelFont.Draw(W - PixelFont.Width(fb) - 8, fr.y + 7, fb, UI.Dim);
         }
 
@@ -627,7 +661,7 @@ namespace Fleeced
                 "^yGROWTH:^w More sheep need more feeding space, bigger pens, faster belts and more machines. Upgrade rooms (5 levels) and belts (Steel and Mega belts, or UPGRADE ALL BELTS in the Build menu). Research SMART DOORS to give every door a filter (hungry, fed, fluffy, rams...) and the factory runs itself.\n" +
                 "^yFOOD:^w Every sheep eats about 4 food a day. Farms grow it by themselves; Feeding Lots feed it to the sheep. Hungry sheep do not breed, grow wool slowly, and eventually starve.\n" +
                 "^yDANGER:^w Better machines are faster and hurt more sheep. Removing safety guards is very profitable. Sheep will remember.\n\n" +
-                "^kControls: WASD/arrows or right-drag to move, scroll to zoom, left-click to select, Esc to cancel. Space pause, 1-3 speed. G opens/closes the selected room's main door. B Build, C Conveyor (R rotates), F Flock, O Factory, N Genetics, R Research, T Market, M Map, L name plates. F5 save, F9 load. The game autosaves every day.";
+                "^kControls: WASD/arrows or right-drag to move, scroll to zoom, left-click to select, Esc to cancel. Hold SPACE: lambs out of the Sheep Gate. P pause, 1-3 speed. G opens/closes the selected room's main door. B Build, C Conveyor (R rotates), F Flock, O Factory, U Upgrades, N Genetics, R Research, T Market, M Map, L name plates. F5 save, F9 load. The game autosaves at each new day (at most every 20 seconds), when you quit and when its window loses focus.";
             var area = new Rect(r.x + 10, r.y + UI.HeaderH + 2, r.width - 20, r.height - UI.HeaderH - 36);
             UI.BeginScroll(area, ref scrollHelp, PixelFont.WrappedHeight(txt, area.width - 8) + 4);
             UI.Wrapped(new Rect(0, 0, area.width - 8, 9999), txt);

@@ -54,7 +54,7 @@ namespace Fleeced
         {
             switch (d.kind)
             {
-                case BKind.House: case BKind.GuardPost: case BKind.Trough: case BKind.Pen: case BKind.FeedLot: return 1;
+                case BKind.House: case BKind.GuardPost: case BKind.Trough: case BKind.Pen: case BKind.FeedLot: case BKind.SheepGate: return 1;
                 case BKind.Market: case BKind.Trading: case BKind.Bank: case BKind.Storage: return 2;
             }
             return d.decor ? 3 : 0;
@@ -184,62 +184,124 @@ namespace Fleeced
         }
 
         // ---------------- SHEEP ----------------
+        // The FLOCK and MEMORIAL tabs draw only the rows inside the scroll window, with the same content height, so scrolling
+        // is unchanged. Labels are built on Repaint (no other event draws them), and a tooltip only for the hovered row.
+        readonly string[] flockTabLabels = { "FLOCK", "MEMORIAL", "LOG" }; // only a Repaint draws them, so only a Repaint refreshes them
+        readonly List<Sheep> flockList = new List<Sheep>(); // the FLOCK rows, refilled every event
+        readonly List<Building> herdRooms = new List<Building>(); // the rooms with a herd, for the FLOCK tab's herd rows
+
+        /// one herd row of the FLOCK tab: its room, how many, of what kind. A click selects the room.
+        void DrawHerdRow(Building b, float yy, float aw)
+        {
+            var h = b.herd;
+            var row = new Rect(0, yy, aw, 22);
+            bool hover = UI.Hover(row);
+            UI.Card(row, selBuilding == b, false, hover);
+            if (UI.Clickable(row, hover ? HerdTip(b) : null, false)) { selBuilding = b; selSheep = null; followSheep = null; FocusOn(b.Center); Sfx.Play("click"); }
+            if (!UI.Repaint || h == null) return;
+            UI.Icon(5, yy + 5, "flock");
+            PixelFont.Draw(18, yy + 3, "^yHERD^k in the " + b.def.name + ": ^w" + UI.Fmt(h.Total), UI.Text);
+            // the second line: its kinds, and its biggest strain if that still fits the row
+            string kinds = "^k" + UI.Fmt(h.Ewes) + " ewes " + UI.Fmt(h.Rams) + " rams ^p" + UI.Fmt(h.Lambs) + " lambs", mix = HerdStrains(h, 1);
+            if (mix != null && PixelFont.Width(kinds + "  " + mix) <= aw - 22) kinds += "  ^p" + mix;
+            PixelFont.Draw(18, yy + 12, kinds, UI.Dim);
+        }
+
+        readonly bool[] strainShown = new bool[Flock.Strains];
+        /// the herd's strains, biggest first (up to `most`), as "SILK 1.2K, GOLD 40"; null when the herd is all plain
+        string HerdStrains(Flock h, int most)
+        {
+            string t = null; int shown = 0;
+            System.Array.Clear(strainShown, 0, strainShown.Length);
+            while (shown < most)
+            {
+                int best = -1; double bn = 0;
+                for (int s = 1; s < Flock.Strains; s++) if (!strainShown[s] && h.Of(s) > bn) { bn = h.Of(s); best = s; }
+                if (best < 0 || bn < 1) break;
+                strainShown[best] = true; shown++;
+                t = (t == null ? "" : t + ", ") + Genetics.ShortName(best) + " " + UI.Fmt(bn);
+            }
+            return t;
+        }
+
+        /// a herd's tooltip: everything about it on a few lines (built only while it is hovered)
+        string HerdTip(Building b)
+        {
+            var h = b.herd;
+            if (h == null) return null;
+            string mix = HerdStrains(h, 4);
+            return "THE HERD OF THE " + b.def.name.ToUpper() + "\n" + UI.Fmt(h.Total) + " counted sheep: " + UI.Fmt(h.Ewes) + " ewes, " + UI.Fmt(h.Rams) + " rams, " + UI.Fmt(h.Lambs) + " lambs."
+                + "\nFleece " + Mathf.RoundToInt(Mathf.Min(1f, h.wool) * 100) + "%, udders " + Mathf.RoundToInt(h.milk * 100) + "%, " + (h.hunger >= 0.7f ? "HUNGRY" : h.hunger < 0.3f ? "fed" : "peckish") + "."
+                + "\nWorth about " + UI.Fmt(HerdAvgPrice(h)) + "c each alive. They leave in droves, following named sheep of their kind out of the doors."
+                + (mix != null ? "\nStrains: " + mix : "");
+        }
+
+        /// the HUD's flock chip, when there is a herd
+        string FlockTip()
+        {
+            double herd = HerdCount;
+            return herd < 1 ? "" : "\nNamed: " + NamedAlive + " (at most " + NamedCap + "). In herds and droves: " + UI.Fmt(herd) + ".";
+        }
+        struct GraveRow { public string cause, text; public float h; } // per record: its cause, "^k" + cause, and the wrapped height of that text
+        readonly List<GraveRow> graveRows = new List<GraveRow>(); // one per graveyard record, in the same order (SyncGraveRows)
+        float graveRowsW = -1;
+
         void DrawSheepPanel()
         {
             var r = PanelRect();
             if (!PanelFrame(r, "THE FLOCK", "flock")) return;
             float x = r.x + 8, w = r.width - 16, y = r.y + UI.HeaderH;
-            string[] tabs = { "FLOCK " + Population, "MEMORIAL " + graveyard.Count, "LOG" };
-            int nt = Tabs(new Rect(x, y, w, 18), tabs, sheepTab);
+            if (UI.Repaint) { flockTabLabels[0] = "FLOCK " + UI.Fmt(Population); flockTabLabels[1] = "MEMORIAL " + graveyard.Count; }
+            int nt = Tabs(new Rect(x, y, w, 18), flockTabLabels, sheepTab);
             if (nt != sheepTab) { sheepTab = nt; scrollSheep = 0; }
             y += 24;
             var area = new Rect(x, y, w, r.yMax - 8 - y);
             float aw = area.width - 6;
             if (sheepTab == 0)
             {
-                var list = new List<Sheep>();
-                foreach (var s in sheep) if (!s.dead && s.act != Act.Hidden) list.Add(s);
-                const float RH = 32;
-                UI.BeginScroll(area, ref scrollSheep, list.Count * (RH + 3));
-                float yy = 0;
-                foreach (var s in list)
-                {
-                    var row = new Rect(0, yy, aw, RH);
-                    UI.Card(row, s == selSheep, false, UI.Hover(row));
-                    if (UI.Clickable(row, TraitList(s), false)) { Select(s); FocusOn(s.pos); }
-                    var pw = new Rect(3, yy + 3, 26, 26);
-                    UI.Well(pw, UI.Grass);
-                    if (s.sr != null) UI.DrawSprite(new Rect(pw.x + 3, pw.y + 3, 20, 20), s.sr.sprite);
-                    float tx = 34;
-                    PixelFont.Draw(tx, yy + 3, s.name + " ^k" + (s.Lamb ? "lamb" : s.Gender + " Lv" + s.level) + (s.variant != Variant.None ? " ^p" + VariantName(s.variant) : "") + (s.strain != 0 ? " ^p" + Genetics.ShortName(s.strain) : ""), UI.Text);
-                    PixelFont.Draw(tx, yy + 12, "^y" + (s.pen != null ? (IsLot(s.pen) ? "Lot" : "Pen") : "Loose") + "^k: " + Trunc(s.status, 22), UI.Text);
-                    PixelFont.Draw(tx, yy + 21, "^k" + Trunc(TraitList(s), 30), UI.Dim);
-                    Color mc = s.mood > 60 ? UI.Good : s.mood > 30 ? UI.Gold : UI.Bad;
-                    UI.Bar(new Rect(aw - 38, yy + 4, 34, 6), s.mood / 100f, mc);
-                    string st = s.injured > 0 || s.sick > 0 ? "^rhurt" : s.hunger > 1.2f ? "^ohungry" : s.wool >= 0.98f ? "^wfluffy" : null;
-                    if (st != null) PixelFont.Draw(aw - 38, yy + 13, st, UI.Text);
-                    yy += RH + 3;
-                }
+                flockList.Clear();
+                foreach (var s in sheep) if (!s.dead && s.act != Act.Hidden) flockList.Add(s);
+                herdRooms.Clear();
+                foreach (var b in buildings) if (IsRoom(b) && HerdIn(b) >= 1) herdRooms.Add(b);
+                const float RH = 32, Step = RH + 3, HStep = 25;
+                float top = herdRooms.Count * HStep; // the herds first, one row a room, then every named sheep
+                UI.BeginScroll(area, ref scrollSheep, top + flockList.Count * Step);
+                for (int i = 0; i < herdRooms.Count; i++) DrawHerdRow(herdRooms[i], i * HStep, aw);
+                int first = Mathf.Max(0, Mathf.FloorToInt((scrollSheep - top) / Step));
+                int last = Mathf.Min(flockList.Count - 1, first + Mathf.CeilToInt(area.height / Step) + 1); // the rows that fit, plus one on each side
+                for (int i = first; i <= last; i++) DrawFlockRow(flockList[i], top + i * Step, aw, RH);
+                // The clip rect of UI.Hover does not move with the scroll, so it can also count a row above the window (one that
+                // starts above area.height) as hovered: that row still gets its tooltip and its click, as when every row was handled.
+                int hr = Mathf.FloorToInt((Event.current.mousePosition.y - top) / Step);
+                if ((hr < first || hr > last) && hr >= 0 && hr < flockList.Count && UI.Hover(new Rect(0, top + hr * Step, aw, RH)))
+                    DrawFlockRow(flockList[hr], top + hr * Step, aw, RH);
                 UI.EndScroll();
             }
             else if (sheepTab == 1)
             {
+                SyncGraveRows(aw - 12);
                 float content = 0;
-                foreach (var d in graveyard) content += 24 + PixelFont.WrappedHeight("^k" + d.cause, aw - 12) + 3;
+                foreach (var g in graveRows) content += 24 + g.h + 3;
                 if (graveyard.Count == 0) content = 30;
                 UI.BeginScroll(area, ref scrollSheep, content);
-                float yy = 0;
+                float yy = 0, top = scrollSheep, bottom = scrollSheep + area.height + 1; // a pixel to spare for rounding
                 if (graveyard.Count == 0) PixelFont.Draw(4, 4, "^kNobody has died yet. Give it time.", UI.Dim);
-                for (int i = graveyard.Count - 1; i >= 0; i--)
+                // newest first, down to the bottom of the window: nothing below it is drawn, and UI.Hover cannot find the mouse there
+                for (int i = graveyard.Count - 1; i >= 0 && yy < bottom; i--)
                 {
                     var d = graveyard[i];
-                    float ch = PixelFont.WrappedHeight("^k" + d.cause, aw - 12);
+                    float ch = graveRows[i].h;
                     var row = new Rect(0, yy, aw, 22 + ch);
-                    UI.Card(row);
-                    UI.Icon(5, yy + 4, "tomb");
-                    PixelFont.Draw(18, yy + 5, "^r" + d.name + "^k  Lv" + d.level + ", lived " + d.age.ToString("0.0") + " days", UI.Text);
-                    PixelFont.DrawWrapped(new Rect(6, yy + 16, aw - 12, ch), "^k" + d.cause, UI.Dim);
-                    UI.Tip(row, d.name + "\n" + d.traits);
+                    bool shown = yy + 22 + ch > top;
+                    if (shown && UI.Repaint)
+                    {
+                        UI.Card(row);
+                        UI.Icon(5, yy + 4, "tomb");
+                        PixelFont.Draw(18, yy + 5, "^r" + d.name + "^k  Lv" + d.level + ", lived " + d.age.ToString("0.0") + " days", UI.Text);
+                        PixelFont.DrawWrapped(new Rect(6, yy + 16, aw - 12, ch), graveRows[i].text, UI.Dim);
+                    }
+                    // as in the FLOCK tab, a row above the window can count as hovered too, if it starts above area.height
+                    if ((shown || yy < area.height) && UI.Hover(row)) UI.Tip(row, d.name + "\n" + d.traits);
                     yy += 22 + ch + 3;
                 }
                 UI.EndScroll();
@@ -257,6 +319,46 @@ namespace Fleeced
                     yy += hh + 2;
                 }
                 UI.EndScroll();
+            }
+        }
+
+        /// One FLOCK row at content height yy. Its tooltip (built only while it is hovered) and its click work on every event;
+        /// the rest only draws, so it waits for Repaint.
+        void DrawFlockRow(Sheep s, float yy, float aw, float rh)
+        {
+            var row = new Rect(0, yy, aw, rh);
+            bool hover = UI.Hover(row);
+            UI.Card(row, s == selSheep, false, hover);
+            string traits = hover ? TraitList(s) : null;
+            if (UI.Clickable(row, traits, false)) { Select(s); FocusOn(s.pos); }
+            if (!UI.Repaint) return;
+            var pw = new Rect(3, yy + 3, 26, 26);
+            UI.Well(pw, UI.Grass);
+            if (s.sr != null) UI.DrawSprite(new Rect(pw.x + 3, pw.y + 3, 20, 20), s.sr.sprite);
+            float tx = 34;
+            PixelFont.Draw(tx, yy + 3, s.name + " ^k" + (s.Lamb ? "lamb" : s.Gender + " Lv" + s.level) + (s.variant != Variant.None ? " ^p" + VariantName(s.variant) : "") + (s.strain != 0 ? " ^p" + Genetics.ShortName(s.strain) : ""), UI.Text);
+            PixelFont.Draw(tx, yy + 12, "^y" + (s.pen != null ? (IsLot(s.pen) ? "Lot" : "Pen") : "Loose") + "^k: " + Trunc(s.status, 22), UI.Text);
+            PixelFont.Draw(tx, yy + 21, "^k" + Trunc(traits ?? TraitList(s), 30), UI.Dim);
+            Color mc = s.mood > 60 ? UI.Good : s.mood > 30 ? UI.Gold : UI.Bad;
+            UI.Bar(new Rect(aw - 38, yy + 4, 34, 6), s.mood / 100f, mc);
+            string st = s.injured > 0 || s.sick > 0 ? "^rhurt" : s.hunger > 1.2f ? "^ohungry" : s.wool >= 0.98f ? "^wfluffy" : null;
+            if (st != null) PixelFont.Draw(aw - 38, yy + 13, st, UI.Text);
+        }
+
+        /// Keeps graveRows in step with graveyard, which only ever grows (or is replaced by a load): a record gets its
+        /// "^k" + cause and that height once, instead of twice per event.
+        void SyncGraveRows(float w)
+        {
+            if (w != graveRowsW) { graveRows.Clear(); graveRowsW = w; }
+            int n = graveyard.Count;
+            if (graveRows.Count > n) graveRows.RemoveRange(n, graveRows.Count - n);
+            for (int i = 0; i < n; i++)
+            {
+                string c = graveyard[i].cause;
+                if (i < graveRows.Count && ReferenceEquals(graveRows[i].cause, c)) continue;
+                string text = "^k" + c;
+                var g = new GraveRow { cause = c, text = text, h = PixelFont.WrappedHeight(text, w) };
+                if (i < graveRows.Count) graveRows[i] = g; else graveRows.Add(g);
             }
         }
 
@@ -346,8 +448,8 @@ namespace Fleeced
                 float price = SellPrice(rr);
                 string trend = priceTrend[i] > 0.01f ? "^g+" : priceTrend[i] < -0.01f ? "^r-" : "^k=";
                 PixelFont.Draw(92, yy + 8, "^y" + price.ToString(price < 10 ? "0.0" : "0") + "c " + trend, UI.Text);
-                UI.Tip(new Rect(90, yy, 40, 22), "PRICE\nPrice per unit. Selling lots at once lowers the price; it recovers daily.");
-                int have = Mathf.FloorToInt((float)res[i]);
+                UI.Tip(new Rect(90, yy, 40, 22), "PRICE\nPrice per unit, sold by hand at your best Market. Selling lots at once lowers the price; it recovers daily.");
+                int have = (int)System.Math.Min(int.MaxValue, System.Math.Floor(res[i]));
                 float bx = 132;
                 if (UI.Button(new Rect(bx, yy + 4, 18, 14), "1", have >= 1)) Sell(rr, 1, false); bx += 20;
                 if (UI.Button(new Rect(bx, yy + 4, 22, 14), "10", have >= 10)) Sell(rr, 10, false); bx += 24;
@@ -384,7 +486,8 @@ namespace Fleeced
                 if (s.variant != Variant.None) tips.Insert(0, VariantName(s.variant) + ": " + VariantDesc(s.variant));
                 tips.Insert(0, s.name.ToUpper());
                 UI.Tip(new Rect(0, yy, aw - 58, 34), string.Join("\n", tips.ToArray()));
-                if (UI.Button(new Rect(aw - 56, yy + 9, 52, 16), o.price + "c", res[0] >= o.price, "Buy " + s.name)) BuyOffer(o);
+                int op = OfferPrice(o);
+                if (UI.Button(new Rect(aw - 56, yy + 9, 52, 16), UI.Fmt(op) + "c", res[0] >= op, "Buy " + s.name)) BuyOffer(o);
                 yy += 37;
             }
             if (offers.Count == 0) { PixelFont.Draw(4, yy + 2, "^kSold out.", UI.Dim); yy += 14; }
@@ -423,9 +526,9 @@ namespace Fleeced
             y += 22;
             float b3 = Mathf.Floor((w - 4) / 3f);
             if (UI.Button(new Rect(x, y, b3, 18), "SAVE [F5]", true, "SAVE\nSave to " + SavePath)) SaveGame(false);
-            if (UI.Button(new Rect(x + b3 + 2, y, b3, 18), "LOAD [F9]", HasSave, "LOAD\nLoad the last save (autosaves every day).")) { LoadGame(); return; }
+            if (UI.Button(new Rect(x + b3 + 2, y, b3, 18), "LOAD [F9]", HasSave, "LOAD\nLoad the last save (autosaves at each new day, at most every 20 s).")) { LoadGame(); return; }
             bool nconf = newGameConfirmT > Time.unscaledTime;
-            if (UI.ButtonEx(new Rect(x + (b3 + 2) * 2, y, w - (b3 + 2) * 2, 18), nconf ? "SURE?" : "NEW GAME", null, null, true, "NEW GAME\nStart a brand new flock.", nconf ? BtnStyle.Danger : BtnStyle.Normal)) { if (nconf) { NewGameFromMenu(); return; } newGameConfirmT = Time.unscaledTime + 2.5f; }
+            if (UI.ButtonEx(new Rect(x + (b3 + 2) * 2, y, w - (b3 + 2) * 2, 18), nconf ? "SURE?" : "NEW GAME", null, null, true, "NEW GAME\nStart a brand new flock. Your current save is archived first.", nconf ? BtnStyle.Danger : BtnStyle.Normal)) { if (nconf) { NewGameFromMenu(); return; } newGameConfirmT = Time.unscaledTime + 2.5f; }
             y += 26;
             // safety sign
             int since = dayIndex - lastAccidentDay;
@@ -439,7 +542,7 @@ namespace Fleeced
             {
                 "Day ^y" + (dayIndex + 1) + "^w (" + DateString() + ", Year " + Year + ")",
                 "Settlement: ^y" + TierName(),
-                "Sheep: ^y" + Population + "^w  (pen space " + popCap + ")",
+                "Sheep: ^y" + UI.Fmt(Population) + "^w  (pen space " + UI.Fmt(popCap) + ")",
                 "Buildings: ^y" + CountBuildings(),
                 "Lambs born: ^p" + births,
                 "Sheep lost: ^r" + graveyard.Count + "^w  (deaths " + deaths + ")",
@@ -513,6 +616,8 @@ namespace Fleeced
             // sheep are managed, never employed: where it lives and what it is worth
             string home = s.pen != null && buildings.Contains(s.pen) ? s.pen.def.name : "^rnowhere (no pen!)";
             PixelFont.Draw(0, y, "^kLives in: ^w" + home, UI.Text); y += 11;
+            if (s.drove != null && s.drove.n >= 1) { PixelFont.Draw(0, y, "^kLeads a drove of ^y" + UI.Fmt(s.drove.n) + "^k " + (s.male ? "rams" : "ewes") + " of the herd", UI.Text); y += 11; }
+            if (s.herdHand) { PixelFont.Draw(0, y, "^kA herd hand: back in the herd when not needed", UI.Dim); y += 11; }
             if (s.strain != 0)
             {
                 var sdef = Genetics.Get(s.strain);
@@ -521,9 +626,10 @@ namespace Fleeced
                 UI.Tip(new Rect(0, y - 1, aw, 10), sdef.name.ToUpper() + "\n" + sdef.desc);
                 y += 11;
             }
-            var slh = FindBuilding(BKind.Slaughter);
-            PixelFont.Draw(0, y, "^kWorth: ^y" + LiveSheepPrice(s, null) + "c^k alive, ^y~" + MuttonYield(s, slh) + "^k mutton", UI.Text);
-            UI.Tip(new Rect(0, y - 1, aw, 10), "WORTH\nSold alive (Market door or SELL): about " + LiveSheepPrice(s, null) + " coins.\nSlaughtered: about " + MuttonYield(s, slh) + " mutton.\nKept: wool every few days" + (s.male ? "" : ", milk too") + ", and lambs.");
+            var slh = BestBuilding(BKind.Slaughter);
+            int door = LiveSheepPrice(s, BestMarket());
+            PixelFont.Draw(0, y, "^kWorth: ^y" + door + "c^k alive, ^y~" + MuttonYield(s, slh) + "^k mutton", UI.Text);
+            UI.Tip(new Rect(0, y - 1, aw, 10), "WORTH\nSold alive: about " + door + " coins through your best Market's door, " + SellSheepPrice(s) + " with SELL.\nSlaughtered: about " + MuttonYield(s, slh) + " mutton.\nKept: wool every few days" + (s.male ? "" : ", milk too") + ", and lambs.");
             y += 13;
             // needs
             Color mc = s.mood > 60 ? UI.Good : s.mood > 30 ? UI.Gold : UI.Bad;
@@ -578,11 +684,12 @@ namespace Fleeced
             if (UI.ButtonEx(new Rect(0, y, bw, 18), "PET", "heart", null, canPet, "PET\nPet " + s.Him + ". +8 mood. Once per half day.")) PetSheep(s);
             if (UI.ButtonEx(new Rect(bw + 3, y, aw - bw - 3, 18), followSheep == s ? "UNFOLLOW" : "FOLLOW", "eye", null, true, "FOLLOW\nCamera follows " + s.Him + ".", followSheep == s ? BtnStyle.Primary : BtnStyle.Normal)) followSheep = followSheep == s ? null : s;
             y += 21;
-            if (UI.ButtonEx(new Rect(0, y, aw, 18), "SELL", "coin", null, !s.Lamb, "SELL\nSell to a 'nice farm upstate' for " + SheepPrice(s) / 2 + "c. The flock will notice.", BtnStyle.Danger)) { SellSheep(s); UI.EndScroll(); return; }
+            if (UI.ButtonEx(new Rect(0, y, aw, 18), "SELL", "coin", null, !s.Lamb, "SELL\nSell to a 'nice farm upstate' for " + SellSheepPrice(s) + "c. The flock will notice.", BtnStyle.Danger)) { SellSheep(s); UI.EndScroll(); return; }
             y += 21;
             if (HasBuilding(BKind.CloneVat))
             {
-                if (UI.ButtonEx(new Rect(0, y, aw, 18), "CLONE (400c)", null, null, res[0] >= 400 && Population < popCap + 2, "CLONE\nMake a copy of " + s.name + ". Mostly the same sheep.")) CloneSheep(s);
+                int cc = CloneCost(s);
+                if (UI.ButtonEx(new Rect(0, y, aw, 18), "CLONE (" + UI.Fmt(cc) + "c)", null, null, res[0] >= cc && Population < FlockCap + 2 && CanName(null), "CLONE\nMake a copy of " + s.name + ", strain and all. Mostly the same sheep.\nThe Vat charges more than a copy could ever be sold for.")) CloneSheep(s);
                 y += 21;
             }
             y += 4;
@@ -618,9 +725,12 @@ namespace Fleeced
             Sfx.Baa(0.7f);
         }
 
-        void CloneSheep(Sheep s)
+        /// a copy of the sheep from the Cloning Vat, for CloneCost; false (and nothing spent) without a Vat, the coins or room
+        public bool CloneSheep(Sheep s)
         {
-            res[0] -= 400;
+            int cost = CloneCost(s);
+            if (!HasBuilding(BKind.CloneVat) || !CanAfford(cost) || Population >= FlockCap + 2 || !CanName(null)) return false;
+            SpendCoins(cost, CoinSrc.SheepBuy);
             var vat = FindBuilding(BKind.CloneVat);
             var c = CreateSheep(vat != null ? vat.Door : s.pos);
             usedNames.Remove(c.name);
@@ -629,11 +739,14 @@ namespace Fleeced
             c.traits = new List<string>(s.traits);
             if (!c.traits.Contains("clone")) c.traits.Add("clone");
             c.variant = s.variant; c.woolCol = s.woolCol; c.faceCol = s.faceCol; c.baseExpr = s.baseExpr; c.male = s.male;
+            c.strain = s.strain; // a Silk sheep's clone is a Silk sheep
+            c.wool = 0; c.milk = 0; // out of the vat bald: a copy's first fleece is not for sale yet
             c.ageDays = 3; c.generation = s.generation; c.parents = "The Vat (" + s.name + ")";
             SpawnParticles(c.pos + Vector2.up * 0.5f, new Color(0.5f, 1f, 0.6f), 16, 2.5f);
             Sfx.Play("zap");
             Log("^c" + c.name + "^w emerges from the vat, damp and staring.");
             AddMod(s, "Met their clone", -10, 2);
+            return true;
         }
 
         // ---------------- BUILDING INSPECTOR ----------------
@@ -745,6 +858,12 @@ namespace Fleeced
                 }
                 else { PixelFont.Draw(0, y + 2, "^gMax level.", UI.Text); y += 13; }
             }
+            // the building kind's upgrade paths
+            if (UiOn("upgrades") && System.Array.Exists(Upgrades.All, p => !p.global && p.kind == b.def.kind))
+            {
+                if (UI.ButtonEx(new Rect(0, y, aw, 16), "UPGRADE PATHS (U)", "star", null, true, "UPGRADES\nThis building's upgrade paths: every " + b.def.name + " gets them.")) OpenUpgrades(b.def.kind);
+                y += 19;
+            }
             // demolish
             bool confirm = demolishConfirmT > Time.unscaledTime;
             if (UI.ButtonEx(new Rect(0, y, aw, 16), confirm ? "CLICK AGAIN TO DEMOLISH" : "DEMOLISH (+" + b.def.cost[0] / 2 + "c)", null, null, !(b.def.kind == BKind.House && CountKind(BKind.House) <= 1) && b.def.kind != BKind.Palace, "DEMOLISH\nTear it down. Workers go back to grazing.", BtnStyle.Danger))
@@ -762,13 +881,33 @@ namespace Fleeced
         {
             bool lot = IsLot(b);
             int cap = RoomCapacity(b);
-            PixelFont.Draw(0, y, (lot ? "In the lot: ^y" : "In the pen: ^y") + b.penCount + "^w/" + cap + "   hungry: ^o" + b.penHungry + "^w   fed: ^g" + b.penFed, UI.Text); y += 11;
+            // two short lines (the inspector is about 200 px wide, and a herd's numbers are long)
+            PixelFont.Draw(0, y, (lot ? "In the lot: ^y" : "In the pen: ^y") + UI.Fmt(Inside(b)) + "^w/" + UI.Fmt(cap), UI.Text); y += 11;
+            PixelFont.Draw(0, y, "^khungry ^o" + UI.Fmt(b.penHungry) + "^k   fed ^g" + UI.Fmt(b.penFed), UI.Text); y += 11;
+            var hh = b.herd;
+            if (hh != null && hh.Total >= 1)
+            {
+                var hr = new Rect(0, y - 1, aw, 21);
+                PixelFont.Draw(0, y, "^yHERD ^w" + UI.Fmt(hh.Total), UI.Text); y += 11;
+                PixelFont.Draw(0, y, "^k" + UI.Fmt(hh.Ewes) + " ewes, " + UI.Fmt(hh.Rams) + " rams, ^p" + UI.Fmt(hh.Lambs) + " lambs", UI.Text); y += 11;
+                if (UI.Hover(hr)) UI.Tip(hr, HerdTip(b));
+                PixelFont.Draw(0, y, "^kFleece ^w" + Mathf.RoundToInt(Mathf.Min(1f, hh.wool) * 100) + "%^k  udders ^w" + Mathf.RoundToInt(hh.milk * 100) + "%^k  " + (hh.hunger >= 0.7f ? "^ohungry" : hh.hunger < 0.3f ? "^gfed" : "^wpeckish"), UI.Text); y += 11;
+                string mix = HerdStrains(hh, 2);
+                if (mix != null) { PixelFont.Draw(0, y, "^kStrains: ^p" + mix, UI.Dim); y += 11; }
+                PixelFont.Draw(0, y, "^kNamed here ^w" + b.penMembers + "^k/" + NamedRoomCap + ", farm ^w" + NamedAlive + "^k/" + NamedCap, UI.Dim); y += 11;
+                PixelFont.Draw(0, y, "^kDroves of up to ^w" + UI.Fmt(DroveSize), UI.Dim); y += 11;
+                bool can = CanName(b) && hh.Adults >= 1;
+                if (UI.ButtonEx(new Rect(0, y, aw, 16), "NAME ONE OF THE HERD", null, null, can, "NAME ONE\nOne of the herd steps out with a name of its own, and keeps it."
+                    + (can ? "" : hh.Adults < 1 ? "\nOnly lambs in this herd." : "\nNo names left: " + NamedRoomCap + " in a room, " + NamedCap + " on the farm.")))
+                { var ns = NameOneOfHerd(b); if (ns != null) Select(ns); }
+                y += 19;
+            }
             if (!lot)
             {
                 PixelFont.Draw(0, y, "^kLives here: ^w" + b.penMembers + "^k   out and about: ^w" + b.penOut, UI.Text); y += 11;
-                if (b.penMembers > cap) { PixelFont.Draw(0, y, "^rOvercrowded! Upgrade it or build another pen.", UI.Text); y += 11; }
+                if (Members(b) > cap) { PixelFont.Draw(0, y, "^rOvercrowded! Upgrade it or build another pen.", UI.Text); y += 11; }
                 UI.Bar(new Rect(0, y, aw, 9), b.breedProgress, Pal.C("e888a8"), "Next lamb " + Mathf.RoundToInt(b.breedProgress * 100) + "%"); y += 12;
-                PixelFont.Draw(0, y, "^kBreeding speed: ^yx" + (PenBreedMult(b) * (tech.Contains("matchmaking") ? 1.5f : 1f) * (HasGene("love_songs") ? 1.3f : 1f)).ToString("0.0#") + "^k (upgrades, Matchmaking, Love Songs)", UI.Text); y += 11;
+                PixelFont.Draw(0, y, "^kBreeding speed: ^yx" + (PenBreedMult(b) * (tech.Contains("matchmaking") ? 1.5f : 1f) * (HasGene("love_songs") ? 1.3f : 1f) * (float)PathMult("pen_breed")).ToString("0.0#") + "^k (levels, Matchmaking, Love Songs, Romance)", UI.Text); y += 11;
             }
             else
             {

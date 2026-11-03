@@ -10,8 +10,31 @@ A playable vertical slice of the design. Everything (pixel art, font, UI, sound)
    The game boots itself via `[RuntimeInitializeOnLoadMethod]` in `Core/Game.cs`.
 
 **Controls:** WASD / arrows or right-drag to pan, scroll to zoom, left-click to select, right-click/Esc to cancel.
-Space/Enter also advance the Supreme Leader's dialogue. Space pauses, 1-3 sets speed. Panels: B Build, F Flock, O Factory, N Genetics, R Research, T Market, M Map, H Help. L toggles the building name plates. On an event card, 1-3 picks a choice.
+Space/Enter also advance the Supreme Leader's dialogue. Hold SPACE: lambs out of the Sheep Gate. P or Pause pauses, 1-3 sets speed. Panels: B Build, F Flock, O Factory, U Upgrades, N Genetics, R Research, T Market, M Map, H Help. L toggles the building name plates. On an event card, 1-3 picks a choice.
 G = open/close the main door of the selected room (or the first pen). C = conveyor tool (drag to lay, R rotates). F5 save, F9 load.
+
+## New in 1.1 (in progress): the Sheep Gate, upgrades and idle earnings
+- **The Sheep Gate.** Right after the tutorial the Supreme Leader builds a gate-house onto the Breeding Pen's fence. HOLD SPACE and lambs pop out of it into the pen: one per release, every half second, from a charge of 6 that refills one every 6 seconds. A full pen takes no more ("PEN FULL"). The gate stands against a pen's top, left or right fence. Free lambs grow into sheep, sheep grow wool, wool grows money.
+- **Upgrade paths (U).** 18 paths for the gate (bigger litters, release speed, charge, refill, a Gate Keeper that releases by itself), the pens (breeding, space), the Feeding Lots, the shearing and milking machines, farms, markets, storage, wool growth and offline earnings. Buy x1, x10, x25, x100 or MAX at a time. Every 10th, 25th, 50th, 100th... level doubles a path's bonus.
+- **Coin Evolutions.** As lifetime earnings grow, the coin evolves through 15 tiers, from the Wool Coin to the Golden Fleece Coin. Every tier makes every sale pay 20% more.
+- **Idle earnings.** While the game is closed, the farm earns a quarter of its last day's income, for up to 8 hours (Night Watch raises the share). The Supreme Leader counts it for you when you come back.
+- **Big numbers.** Numbers past a billion are named (4.5B, 6.7Qa ... up to a centillion) or, with the NUMBERS option on the title screen, scientific (4.50e15).
+- **Smoother big flocks.** 800 sheep at 4x speed now hold 60 fps (and 144 with the frame cap raised); the game no longer makes garbage for every sheep every frame.
+- **Exits take turns.** A room or machine with several open exits now shares the sheep between them evenly, even right after a door opens.
+- **New decrees** walk you through the upgrades: buy 10 upgrade levels, hire a Gate Keeper, and take a path to level 25 (every milestone doubles its bonus).
+- **Every Market counts.** Each Market sells at its own level: the goods that ride into it and its own AUTO batches (they all used the first Market's level). Selling by hand goes through your best Market.
+- **The Cloning Vat copies the strain too.** Its price follows the sheep: always more than the copy could be sold for. Copies come out shorn, cannot be spliced, do not split and do not rise again.
+- **Fair dealer prices.** The sheep dealer's prices rise with the coin and Haggling, like every sale.
+- **The Supreme Leader finishes his sentences.** A coin evolution or a new settlement tier waits until he is done, so a decree's NEXT and the offline earnings are never cut off.
+- Saves are version 10. 1.1 reads every older save; 1.0 refuses a 1.1 save and leaves it untouched.
+
+## New after 1.1 (in progress): the herd
+- **The herd.** A sheep keeps its name while its room has fewer than 24 named sheep and the farm fewer than 300. Past that, new sheep (gate lambs, births, Splitters splitting) join the room's **herd**: counted, not named. A herd covers its room's floor with sheep and shows on its badge ("PEN 24 + 1.2K HERD / 2.0K"). It grows up, gets hungry, grows wool and milk, eats in Feeding Lots and breeds in Breeding Pens, all of it together.
+- **Droves.** When a named sheep leaves a room through a door, up to 4 of the herd of its own sex and strain follow it (more with **Bigger Droves**). They trot behind it ("+24"), go through every machine with it (shorn, milked or spliced on the same load), are sold with it at a Market door, become mutton with it (one memorial record: "24 of the herd went with him"), and join the herd of the room it reaches. A door's filter judges the herd by its shared fleece, udders and hunger.
+- **Herd hands.** When a herd has nobody of its kind to follow out of an open door, one of it steps forward as a herd hand to lead it, and melts back into the herd when it is not needed. **NAME ONE OF THE HERD** in the room's panel gives one of them a name for good.
+- **Room for millions.** **Sheep Stacking** multiplies the space of every pen and lot; Pen Space, Lot Space and Bigger Litters go to level 5000; the 600-sheep limit is gone. At most 300 named sheep are ever on screen, so a herd of a million keeps the frame rate.
+- The **FLOCK** panel lists each room's herd above the named sheep, and a room's panel shows its herd: ewes, rams, lambs, fleece, udders, hunger and strains. The Supreme Leader introduces the herd the first time one forms, and new decrees run from Bigger Droves to a million sheep.
+- Saves are version 11. This build reads every older save; a version 10 build refuses a version 11 save and leaves it untouched.
 
 ## The core loop: rooms, doors, conveyors, machines (a sheep Factorio)
 - **Sheep never work. They are managed.** Every sheep is livestock: it lives in a Breeding Pen, eats in a Feeding Lot and rides conveyors through machines. It gets shorn for **wool**, milked for **milk**, bred for **lambs**, or turned into **mutton** (or sold alive at a Market). Every building runs by itself: farms grow food, labs research and markets sell, with no sheep standing in front of them. (Version 7 removed the old jobs; old saves turn every worker back into livestock.)
@@ -23,7 +46,7 @@ G = open/close the main door of the selected room (or the first pen). C = convey
 - **Feeding Lot:** sheep that ride in walk to the troughs and eat from the food store until they are **FULL**. Only fed sheep leave through its doors. Holds 8 / 14 / 22 / 32 / 48 and eats faster each level. Farms (with Farmers) fill the food store.
 - **Shearing Machine / Milking Machine / Industrial Wool Plant** sit ON a conveyor: a sheep rides in and comes out the other side shaved or milked (rams get "REJECTED"). No workers.
 - **Slaughterhouse:** the door nobody comes back from. Sheep ride in through its IN doors (shut them to stop it), **Mutton** comes out on a belt (or goes to storage) and sells well. The flock's mood dips while it runs. It is how you thin an overcrowded flock.
-- **Market doors:** a Market (and every goods building: Creamery, Workshop, Textile Factory, Atelier, Storage) has an IN door on each side a belt runs into. Whatever rides into a Market is sold: goods at +10%, and **live sheep** for about half their price (Charismatic sheep +50%). Shut a door and everything waits on the belt.
+- **Market doors:** a Market (and every goods building: Creamery, Workshop, Textile Factory, Atelier, Storage) has an IN door on each side a belt runs into. Whatever rides into a Market is sold, 5% dearer for each level of that Market above the first: goods at +10%, and **live sheep** for about half their price (Charismatic sheep +50%). Shut a door and everything waits on the belt.
 - **The balance:** a slaughtered or sold sheep is worth one payout; a kept one keeps making wool (about 16 coins a day) and, for ewes, milk (about 19), plus lambs. Slaughter only what you cannot feed or house. The **FACTORY** panel (O) shows yesterday's numbers: lambs born vs. slaughtered / sold / dead, food grown vs. eaten, what was made, every room and what each machine did, with a one-line verdict.
 - **Machine doors:** every side of a machine that a belt touches has a door (a roll-up shutter with a lamp, plus a small **IN** / **OUT** tag next to it: green = open, red = shut; click the tag or use the machine's panel). A shut **IN** door makes sheep wait on the belt. Sheep leave through **open OUT doors**; with two open OUT doors the line **splits** (round robin, and Smart Door filters work on OUT doors, after the machine has done its job). A shut OUT door is a goods hatch. If no OUT door is open (or no open one lets that sheep through its filter), the sheep **waits inside** and the line stops until you fix it. Until you click a door it follows the belts: open where a belt comes in and straight across from it, shut elsewhere. The Slaughterhouse has IN doors only; its way out is a mutton chute.
 - Machines push their goods onto belts pointing AWAY from a **shut** side (never onto the sheep line). Run those belts into **Markets** (build as many as you like) and the goods sell themselves (+10%).
@@ -52,7 +75,7 @@ G = open/close the main door of the selected room (or the first pen). C = convey
   - New door filters **PLAIN** and **SPLICED** route sheep to or around the Gene Lab.
 - **Growth and upgrades:** lambs keep coming, so you keep upgrading: bigger, faster-breeding pens and feeding lots (5 levels each), more farms, faster machines that get more wool / milk / mutton out of every sheep (Level 2 costs only coins; the inspector shows what the next level gives), more Markets and faster belts.
 - **Belt tiers:** Rubber (5c), **Steel** (12c, research Steel Belts: 80% faster, sheep ride closer together) and **Mega** (30c, research Mega Belts: wider, fastest, sheep packed tight). Lay a better belt over an old one to upgrade it, or press **UPGRADE ALL BELTS** in the Build menu. Greased Belts research makes every belt 30% faster.
-- **Smart Doors** research gives every door a **filter**: ALL, HUNGRY, FED, READY, FLUFFY, MILKY, RAMS or EWES. Example: pen door to the lot = HUNGRY, lot door to the shears = FLUFFY, lot door to the Slaughterhouse = RAMS. Leave the doors open and the factory runs itself.
+- **Smart Doors** research gives every door a **filter**: ALL, HUNGRY, FED, READY, FLUFFY, MILKY, RAMS, EWES, PLAIN (no DNA strain) or SPLICED (any strain). Example: pen door to the lot = HUNGRY, lot door to the shears = FLUFFY, lot door to the Slaughterhouse = RAMS. Leave the doors open and the factory runs itself.
 - Buildings can be dropped on top of belts. Belts and buildings can't go inside a room.
 
 ## The Supreme Leader (tutorial)
@@ -73,9 +96,15 @@ A new game opens with **the Supreme Leader**: a big ram with curly horns, a flee
 - **Wool** grows over time; **milk** fills up in ewes (a pink udder means full). Both are harvested only by machines on the conveyor. The **Creamery** (research Cheese Making) turns 3 milk into 1 cheese.
 
 ## Save / load
-The game autosaves every in-game day and on quit, to `Application.persistentDataPath/fleeced_save.json`
+The game autosaves at each new in-game day (at most every 20 seconds of real time), on quit and when its window loses focus, to `Application.persistentDataPath/fleeced_save.json`
 (on Windows: `%USERPROFILE%/AppData/LocalLow/DefaultCompany/Sheepgame/`). The title screen shows CONTINUE / NEW GAME.
 The Map panel has SAVE, LOAD and NEW GAME buttons. Everything is saved: sheep, buildings, belts, items on belts, terrain, research, events and pending story chains.
+
+A save can't be lost (version 1.0):
+- Every save is written to `fleeced_save.json.tmp` first and then swapped in, and the previous save stays as `fleeced_save.json.bak`.
+- Before anything replaces a save the game didn't load itself (NEW GAME, BEGIN, an old or damaged save), it keeps a copy as `fleeced_save.v<version>-<time>.bak`. These copies are never overwritten or deleted.
+- A save that fails to load falls back to the `.bak` once; otherwise the title says what happened. A save from a newer version of the game is never loaded. It is replaced only if you choose LOAD BACKUP, and only after a copy of it is kept.
+- When there is nothing to CONTINUE, the title offers LOAD BACKUP: the `.bak` or the newest copy this version can read.
 
 ## Factory layer
 - **Conveyor belts** (available from the start, three tiers, see above). Buildings push their products onto any adjacent belt pointing away from them. A belt that runs into a building feeds it: the building gets a local input buffer and works **+50% faster**. Belts into the Market sell everything at +10%; belts into Storage put goods in stock. Goods stuck at a dead end are carried to storage after a few seconds; goods at a SHUT door wait.
@@ -90,7 +119,7 @@ The Map panel has SAVE, LOAD and NEW GAME buttons. Everything is saved: sheep, b
 - **22 buildings** with 3 visual levels each (wooden shack, then workshop, then rusty industrial with smokestacks, gears and blood stains). They build themselves.
 - **Wool chain:** Wool, then Clean Wool, Yarn, Fabric, Clothing and Luxury Goods. Prices fluctuate and drop when you dump stock.
 - **Food:** Farms grow it by themselves; pen grass helps a little and visibly wears down. Seasons matter, and winter is lean.
-- **Breeding** with trait inheritance, Selective Breeding and rare-variant odds. **Cloning Vat.**
+- **Breeding** with trait inheritance, Selective Breeding and rare-variant odds. **Cloning Vat** (the clone keeps the strain).
 - **Danger:** machine accidents to the sheep going through (shaved, injured, launched, flattened, burned, knocked out, or dead), "Remove Safety Guards" (+35% output), pollution that kills grass, deaths with a NOOO banner, ghosts, tombstones and a memorial.
 - **20+ decision-card events** with follow-up chains (vegetarian wolf Gerald, the fake luxury wool scandal, the Great Shears cult, illegal shears, and more), plus wolf raids and Guard Posts.
 - **38 research projects** in 7 categories, ending in the Moon Grass Hypothesis, the Sheep Space Program, a rocket launch, and an ending card.
@@ -112,7 +141,8 @@ The Map panel has SAVE, LOAD and NEW GAME buttons. Everything is saved: sheep, b
 | `Core/Leader.cs` | The Supreme Leader: dialogue, tutorial decrees and blueprints, shouting |
 | `Art/LeaderArt.cs` | Leader portrait and balcony bust, the palace, the trough |
 | `Core/Belts.cs` | Conveyor belts, items, sheep riding belts (queues, machine entry, pen drop) |
-| `Core/SaveLoad.cs` | JSON save/load and world restart |
+| `Core/SaveLoad.cs` | JSON save/load and world restart, safe writes (`.tmp`, `.bak`, archived copies), guarded loading and LOAD BACKUP |
+| `Core/DevHooks.cs` | Hooks for the automated test suites. It compiles only in test builds (`FLEECED_DEV`), so the game itself contains none of it |
 | `Core/World.cs` | Ground tiles, grass, land, fence, decals, placement |
 | `Art/*` | Procedural sprites (sheep, buildings, props), pixel font, icons, the FLEECED logo |
 | `UI/*` | Pixel UI kit (riveted panels, buttons with keycaps, cards, gauges, tooltips), HUD and all panels. The UI scale is always a whole number, so pixels stay crisp. |

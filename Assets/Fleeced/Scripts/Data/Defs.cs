@@ -7,7 +7,7 @@ namespace Fleeced
     public enum Job { Grazer, Farmer, Shearer, Processor, Operator, Tailor, Merchant, Researcher, Breeder, Builder, Guard, Warehouse, Astronaut, Milker, Cheesemaker }
     public enum Cat { Graze, Farm, Wool, Industry, Research, Commerce, Breed, Build, Guard, Labor, Craft, Space }
     public enum Variant { None, Golden, Black, Rainbow, ThreeEyed, Spiky, TwoHeaded }
-    public enum BKind { House, Farm, Shed, Market, Workshop, Barn, Lab, Storage, Textile, Wheel, Atelier, GuardPost, Trading, Bank, Plant, Spa, Statue, Graveyard, Rocket, CloneVat, Flowers, Sign, Funnel, Palace, Dairy, Creamery, Trough, Pen, FeedLot, Slaughter, GeneLab }
+    public enum BKind { House, Farm, Shed, Market, Workshop, Barn, Lab, Storage, Textile, Wheel, Atelier, GuardPost, Trading, Bank, Plant, Spa, Statue, Graveyard, Rocket, CloneVat, Flowers, Sign, Funnel, Palace, Dairy, Creamery, Trough, Pen, FeedLot, Slaughter, GeneLab, SheepGate }
 
     public static class ResInfo
     {
@@ -170,6 +170,8 @@ namespace Fleeced
         public static readonly List<BuildingDef> All = new List<BuildingDef>();
         static Dictionary<BKind, BuildingDef> map = new Dictionary<BKind, BuildingDef>();
         public static BuildingDef Get(BKind k) { return map[k]; }
+        /// false for a kind this build doesn't know (a damaged save, or one from a newer version)
+        public static bool TryGet(BKind k, out BuildingDef d) { return map.TryGetValue(k, out d); }
 
         static BuildingDef Add(BuildingDef d) { All.Add(d); map[d.kind] = d; return d; }
 
@@ -208,6 +210,7 @@ namespace Fleeced
             Add(new BuildingDef(BKind.FeedLot, "Feeding Lot", 6, 4) { cost = new[] { 50, 160, 420, 1100, 2600 }, slots = new[] { 0, 0, 0, 0, 0 }, maxLevel = 5, levelTech = new[] { null, null, null, "hyper_industry", "wool_singularity" }, danger = new[] { 0f, 0, 0, 0, 0 }, power = new float[] { 0, 0, 0, 0, 0 }, buildTime = new float[] { 1, 8, 12, 20, 30 }, levelNames = new[] { "Feeding Lot", "Big Feeding Lot", "Feeding Hall", "Feeding Factory", "Hunger Annihilator" }, desc = "Sheep that ride in eat from the food store until they are FULL. Only fed sheep leave, through its open DOORS: to the machines, home, or... the other door. Holds 8 / 14 / 22 / 32 / 48 and eats faster each level." });
             Add(new BuildingDef(BKind.GeneLab, "Gene Lab", 2, 2) { cost = new[] { 160, 380, 900 }, slots = new[] { 0, 0, 0 }, tech = "genetics", levelTech = new[] { null, null, "mass_production" }, danger = new[] { 0.002f, 0.004f, 0.008f }, levelNames = new[] { "Gene Shed", "Gene Lab", "DNA Cathedral" }, desc = "Put it ON a conveyor. SAMPLE mode: every sheep that rides through gives 1 DNA. SPLICE mode: sheep come out DNA-altered (13 strains, some of them secret). CHAOS mode: 1 DNA and anything can happen. Better levels give more DNA and splice for less.", power = new float[] { 0, 0, 5 } });
             Add(new BuildingDef(BKind.Slaughter, "Slaughterhouse", 2, 2) { cost = new[] { 90, 260, 700 }, slots = new[] { 0, 0, 0 }, levelTech = new[] { null, null, "mass_production" }, levelNames = new[] { "Chopping Block", "Slaughterhouse", "Mutton Factory" }, desc = "The door nobody comes back from. Put it ON a conveyor: sheep that ride in become MUTTON, which leaves on a belt pointing away (or goes to storage). The flock notices.", power = new float[] { 0, 0, 4 } });
+            Add(new BuildingDef(BKind.SheepGate, "Sheep Gate", 2, 2) { cost = new[] { 0, 0, 0 }, slots = new[] { 0, 0, 0 }, maxLevel = 1, unique = 1, buildTime = new float[] { 6, 1, 1 }, levelNames = new[] { "Sheep Gate", "", "" }, desc = "HOLD SPACE: lambs pop out of it into the Breeding Pen it stands against. It refills over time, and lambs need pen space. Build it against a pen's TOP, LEFT or RIGHT fence (not on a door). Free." });
 
             // Levels 4 & 5: increasingly unhinged industry
             X(BKind.House, 900, 2500, 0, 0, 0, 0, 4, 8, "Sheep Tower", "Wool Arcology");
@@ -258,7 +261,7 @@ namespace Fleeced
             new ResearchDef("fertilizer", "Suspicious Fertilizer", "Farming", 90, "+30% farm output. Do not ask what is in it.", "carrots"),
             new ResearchDef("cheese", "Cheese Making", "Farming", 30, "Unlocks the Creamery: 3 Milk -> 1 Cheese. The smell is part of the process."),
             new ResearchDef("udder_science", "Udder Science", "Farming", 60, "+25% milk per milking. Unlocks Creamery Lv2. Do not ask.", "cheese"),
-            new ResearchDef("fluff_detector", "Smart Doors", "Farming", 25, "Every door gets a FILTER: only HUNGRY, FED, READY, FLUFFY, MILKY sheep, RAMS or EWES go through. Leave the doors open and the factory runs itself."),
+            new ResearchDef("fluff_detector", "Smart Doors", "Farming", 25, "Every door gets a FILTER: only HUNGRY, FED, READY, FLUFFY, MILKY, PLAIN or SPLICED sheep, RAMS or EWES go through. Leave the doors open and the factory runs itself."),
             new ResearchDef("hay", "Industrial Hay", "Farming", 160, "Unlocks Farm Lv3 with a combine harvester. Steering is optional.", "fertilizer", "machinery"),
 
             new ResearchDef("improved_shears", "Improved Shears", "Wool", 15, "+25% wool per shear. The sheep look cold."),

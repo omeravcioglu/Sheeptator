@@ -15,6 +15,9 @@ namespace Fleeced
         public int lotMeals, slaughtered, gateToggles, machineSheep;
 
         public static readonly string[] DoorNames = { "BOTTOM", "RIGHT", "TOP", "LEFT" };
+        // "Heading for the " + DoorNames[i].ToLower() + " door" and the queueing text, built once (Boot makes the culture invariant)
+        static readonly string[] HeadingForDoor = { "Heading for the bottom door", "Heading for the right door", "Heading for the top door", "Heading for the left door" };
+        static readonly string[] QueueingAtDoor = { "Queueing at the bottom door", "Queueing at the right door", "Queueing at the top door", "Queueing at the left door" };
         public static readonly string[] FilterNames = { "ALL", "HUNGRY", "FED", "READY", "FLUFFY", "MILKY", "RAMS", "EWES", "PLAIN", "SPLICED" };
         public static readonly string[] FilterTips =
         {
@@ -30,6 +33,22 @@ namespace Fleeced
             "Only DNA-altered sheep (any strain) use this door.",
         };
 
+        // Sheep status texts that name a building, built once per text and kind instead of per sheep per step. The text is
+        // always KindPre[msg] + def.name + KindPost[msg]: a slot is rebuilt whenever the def's name is not the one it was built from.
+        const int KindLeaving = 0, KindGoingBack = 1, KindBroken = 2, KindBeingBuilt = 3, KindDoorShut = 4, KindQueueFor = 5, KindNoSheep = 6, KindFull = 7, KindSlots = 64;
+        static readonly string[] KindPre = { "Leaving the ", "Going back to the ", "Waiting: the ", "Waiting: the ", "Waiting: the ", "Queueing for the ", "Waiting: the ", "Waiting: the " };
+        static readonly string[] KindPost = { " for work", "", " is broken", " is being built", "'s door is SHUT", "", " does not take sheep", " is FULL" };
+        static readonly string[] kindStatus = new string[8 * KindSlots], kindStatusName = new string[8 * KindSlots];
+        static string KindText(int msg, BuildingDef d)
+        {
+            int k = (int)d.kind;
+            if (k < 0 || k >= KindSlots) return KindPre[msg] + d.name + KindPost[msg];
+            int i = msg * KindSlots + k;
+            string t = kindStatus[i], name = d.name;
+            if (t == null || !ReferenceEquals(kindStatusName[i], name)) { t = KindPre[msg] + name + KindPost[msg]; kindStatus[i] = t; kindStatusName[i] = name; }
+            return t;
+        }
+
         // ---------------- room geometry ----------------
         public static bool IsPen(Building b) { return b != null && b.def.kind == BKind.Pen; }
         public static bool IsLot(Building b) { return b != null && b.def.kind == BKind.FeedLot; }
@@ -37,18 +56,27 @@ namespace Fleeced
         public static bool IsRoomKind(BKind k) { return k == BKind.Pen || k == BKind.FeedLot; }
         public static bool RoomActive(Building b) { return b.construct >= 1f || b.upgrading; }
         public static int RoomCapacity(Building b) { return RoomCapAt(IsLot(b), b.level); }
+        // per-level tables, allocated once: RoomCapAt and LotEatRate run for room sheep every step
+        static readonly int[] LotCapBase = { 8, 14, 22, 32, 48 }, PenCapBase = { 16, 24, 34, 46, 60 };
+        static readonly float[] LotEatBase = { 1f, 1.4f, 1.9f, 2.6f, 3.5f };
         public static int RoomCapAt(bool lot, int level)
         {
-            if (lot) return BuildingDef.At(new[] { 8, 14, 22, 32, 48 }, level);
-            int c = BuildingDef.At(new[] { 16, 24, 34, 46, 60 }, level);
-            if (I != null && I.tech.Contains("bunk_beds")) c += 4;
-            if (I != null && I.tech.Contains("apartments")) c += 8;
-            return c;
+            double c;
+            if (lot) c = BuildingDef.At(LotCapBase, level) + (I != null ? (int)I.PathAdd("lot_space") : 0);
+            else
+            {
+                c = BuildingDef.At(PenCapBase, level);
+                if (I != null && I.tech.Contains("bunk_beds")) c += 4;
+                if (I != null && I.tech.Contains("apartments")) c += 8;
+                if (I != null) c += (int)I.PathAdd("pen_space");
+            }
+            if (I != null) c *= I.PathMult("herd_space"); // Sheep Stacking (x1 until upgraded): room for a herd
+            return (int)System.Math.Min(System.Math.Floor(c), 1e9);
         }
         /// breeding speed of a Breeding Pen by level: upgrades make lambs faster
         public static readonly float[] PenBreed = { 1f, 1.3f, 1.65f, 2.1f, 2.7f };
         public static float PenBreedMult(Building b) { return BuildingDef.At(PenBreed, b.level); }
-        public static float LotEatRate(Building b) { return 1.6f * BuildingDef.At(new[] { 1f, 1.4f, 1.9f, 2.6f, 3.5f }, b.level); }
+        public static float LotEatRate(Building b) { return 1.6f * BuildingDef.At(LotEatBase, b.level) * (I != null ? (float)I.PathMult("lot_speed") : 1f); }
         public static Rect PenInterior(Building p) { return new Rect(p.x + 0.35f, p.y + 0.35f, p.def.w - 0.7f, p.def.h - 0.8f); }
 
         /// the tile just outside door i: 0 bottom, 1 right, 2 top, 3 left
@@ -100,7 +128,9 @@ namespace Fleeced
         /// follows a conveyor from (x, y) to the first building or room it reaches
         string TraceBelt(int x, int y, Building self)
         {
-            var seen = new HashSet<int>();
+            // the tiles seen on this trace are the ones stamped with traceGen (no set to allocate per call)
+            if (traceGen == int.MaxValue) { System.Array.Clear(traceMark, 0, traceMark.Length); traceGen = 0; }
+            traceGen++;
             for (int step = 0; step < 400; step++)
             {
                 if (!InMap(x, y)) return "the edge of the world";
@@ -111,12 +141,15 @@ namespace Fleeced
                     if (t.pen != null) return t.pen == self ? "back inside" : t.pen.def.name;
                 }
                 if (t.belt < 0) return step == 0 ? null : "a dead end";
-                if (!seen.Add(y * MapW + x)) return "a loop";
+                int k = y * MapW + x;
+                if (traceMark[k] == traceGen) return "a loop";
+                traceMark[k] = traceGen;
                 var d = Dir(t.belt);
                 x += d.x; y += d.y;
             }
             return "somewhere far away";
         }
+        readonly int[] traceMark = new int[MapW * MapH]; int traceGen;
 
         /// follows the belt from a door to the first building or room it reaches
         public string DoorDestination(Building p, int i) { var t = DoorTile(p, i); return TraceBelt(t.x, t.y, p); }
@@ -192,6 +225,7 @@ namespace Fleeced
         {
             if (!IsRoom(p) || p.doorOpen[i] == open) return;
             p.doorOpen[i] = open;
+            ResetPicks(p);
             var o = DoorOuter(p, i);
             if (IsVisible(o))
             {
@@ -203,19 +237,28 @@ namespace Fleeced
         }
         public void ToggleDoor(Building p, int i) { SetDoor(p, i, !p.doorOpen[i], true); }
         public void ToggleMainDoor(Building p) { ToggleDoor(p, MainDoor(p)); }
+        /// Exits share the traffic by picking the door used least. Counting from zero again whenever the doors change keeps that a
+        /// real round robin: a newly opened door used to take every sheep until its count caught up with the old doors' totals.
+        static void ResetPicks(Building b) { for (int k = 0; k < b.doorPicks.Length; k++) b.doorPicks[k] = 0; }
+
         public void CycleFilter(Building p, int i, int dir = 1)
         {
             p.doorFilter[i] = (p.doorFilter[i] + dir + FilterNames.Length) % FilterNames.Length;
+            ResetPicks(p);
             Sfx.Play("click", 0.4f, 1.2f);
         }
 
-        bool SheepNear(Vector2 pos, float r, Sheep except)
+        /// is another sheep within r of pos? `hint` (one per door: Building.nearHint) is the last sheep found there. It is tested
+        /// first, with the same test on live state, so the answer is the full scan's (a sheep that leaves the flock is dead first).
+        bool SheepNear(Vector2 pos, float r, Sheep except, ref Sheep hint)
         {
             float r2 = r * r;
+            var w = hint;
+            if (w != null && w != except && !w.dead && w.act != Act.Hidden && w.act != Act.InMachine && (w.pos - pos).sqrMagnitude < r2) return true;
             foreach (var o in sheep)
             {
                 if (o == except || o.dead || o.act == Act.Hidden || o.act == Act.InMachine) continue;
-                if ((o.pos - pos).sqrMagnitude < r2) return true;
+                if ((o.pos - pos).sqrMagnitude < r2) { hint = o; return true; }
             }
             return false;
         }
@@ -232,14 +275,13 @@ namespace Fleeced
         {
             var R = new Rect(p.x - 0.3f, p.y - 0.3f, p.def.w + 0.6f, p.def.h + 0.6f);
             if (!SegHits(R, pos, dest)) return dest;
-            Vector2[] cs =
+            // the four corners as locals (no array per call), tried in the same order: on a tie the first one wins
+            Vector2 c0 = new Vector2(R.xMin - 0.25f, R.yMin - 0.25f), c1 = new Vector2(R.xMax + 0.25f, R.yMin - 0.25f),
+                    c2 = new Vector2(R.xMax + 0.25f, R.yMax + 0.25f), c3 = new Vector2(R.xMin - 0.25f, R.yMax + 0.25f);
+            Vector2 best = c0; float bs = 1e9f;
+            for (int k = 0; k < 4; k++)
             {
-                new Vector2(R.xMin - 0.25f, R.yMin - 0.25f), new Vector2(R.xMax + 0.25f, R.yMin - 0.25f),
-                new Vector2(R.xMax + 0.25f, R.yMax + 0.25f), new Vector2(R.xMin - 0.25f, R.yMax + 0.25f),
-            };
-            Vector2 best = cs[0]; float bs = 1e9f;
-            foreach (var c in cs)
-            {
+                Vector2 c = k == 0 ? c0 : k == 1 ? c1 : k == 2 ? c2 : c3;
                 if (SegHits(R, pos, c)) continue;
                 float score = (c - pos).magnitude + (c - dest).magnitude + (SegHits(R, c, dest) ? 50 : 0);
                 if (score < bs) { bs = score; best = c; }
@@ -305,7 +347,7 @@ namespace Fleeced
                 bool walking = s.act == Act.Wander || s.act == Act.Graze || s.act == Act.Idle || s.act == Act.ToGate || s.act == Act.GoWork;
                 if (!inside || !walking) { if (s.act == Act.ToGate) s.act = Act.Wander; return false; }
                 int wd = s.workplace != null ? NearestDoor(p, s.workplace.Center) : NearestDoor(p, s.pos);
-                s.act = Act.ToGate; s.status = "Leaving the " + p.def.name + " for work";
+                s.act = Act.ToGate; s.status = KindText(KindLeaving, p.def);
                 if (MoveTo(s, DoorInner(p, wd), dt, 1.1f)) { s.pos = DoorOuter(p, wd) + Sideways(wd); s.act = Act.Wander; s.target = s.pos; s.beltImmune = 1.5f; }
                 return true;
             }
@@ -323,16 +365,17 @@ namespace Fleeced
                 if (MoveTo(s, DoorInner(p, door), dt, 1.1f))
                 {
                     var o = DoorOuter(p, door);
-                    if (p.doorCd[door] <= 0 && !SheepNear(o, 0.6f, s))
+                    if (p.doorCd[door] <= 0 && !SheepNear(o, 0.6f, s, ref p.nearHint[door]))
                     {
                         p.doorCd[door] = GateInterval;
                         s.pos = o; s.target = o;
                         s.act = Act.Wander; s.ridingT = 0; s.beltImmune = 0; s.exitDoor = -1; s.hasEatSpot = false;
                         s.status = "Riding to the " + (DoorDestination(p, door) ?? "conveyor");
+                        TakeDrove(s, p, door); // the herd of its kind follows it out
                     }
-                    else s.status = "Queueing at the " + DoorNames[door].ToLower() + " door";
+                    else s.status = QueueingAtDoor[door];
                 }
-                else s.status = "Heading for the " + DoorNames[door].ToLower() + " door";
+                else s.status = HeadingForDoor[door];
                 return true;
             }
 
@@ -341,12 +384,13 @@ namespace Fleeced
             int hd = NearestDoor(p, s.pos);
             Vector2 go = DoorOuter(p, hd);
             s.act = Act.ToGate;
-            s.status = "Going back to the " + p.def.name;
+            s.status = KindText(KindGoingBack, p.def);
             MoveTo(s, RoomWaypoint(p, s.pos, go), dt, 1.05f);
             if ((s.pos - go).sqrMagnitude < 0.03f)
             {
                 s.pos = DoorInner(p, hd) + Inward(hd) * 0.45f;
                 s.act = Act.Wander; s.target = PickGrazeTarget(s); s.exitDoor = -1;
+                MergeDrove(s, p);
             }
             return true;
         }
@@ -370,14 +414,14 @@ namespace Fleeced
             if (res[(int)Res.Food] < cost) { bite *= (float)(res[(int)Res.Food] / cost); cost = (float)res[(int)Res.Food]; }
             res[(int)Res.Food] -= cost; foodEaten += cost;
             s.hunger -= bite;
-            if (IsVisible(s.pos) && rng.NextDouble() < dt * 2.5) SpawnParticles(s.pos + new Vector2(s.faceRight ? 0.4f : -0.4f, 0.5f), new Color(0.55f, 0.75f, 0.3f), 2, 1f);
+            if (IsVisible(s.pos) && fxRng.NextDouble() < dt * 2.5) SpawnParticles(s.pos + new Vector2(s.faceRight ? 0.4f : -0.4f, 0.5f), new Color(0.55f, 0.75f, 0.3f), 2, 1f);
             if (s.hunger <= 0.12f)
             {
-                lotMeals++;
+                lotMeals = Bump(lotMeals, 1);
                 s.hasEatSpot = false;
                 s.act = Act.Wander; s.target = PickGrazeTarget(s);
-                if (IsVisible(s.pos) && rng.NextDouble() < 0.4) SpeechText(s.pos + new Vector2(0.2f, 1.3f), rng.NextDouble() < 0.5 ? "full" : "*burp*");
-                if (rng.NextDouble() < 0.3) Sfx.Play("nom", 0.25f);
+                if (IsVisible(s.pos) && fxRng.NextDouble() < 0.4) SpeechText(s.pos + new Vector2(0.2f, 1.3f), fxRng.NextDouble() < 0.5 ? "full" : "*burp*");
+                if (fxRng.NextDouble() < 0.3) Sfx.Play("nom", 0.25f);
             }
             return true;
         }
@@ -391,12 +435,14 @@ namespace Fleeced
             s.act = Act.Wander; s.target = s.pos; s.exitDoor = -1; s.hasEatSpot = false;
             if (s.job == Job.Grazer) s.pen = room;
             room.penCount++;
-            if (IsVisible(s.pos) && rng.NextDouble() < 0.4)
+            MergeDrove(s, room); // its drove joins the room's herd
+            if (IsVisible(s.pos) && fxRng.NextDouble() < 0.4)
             {
-                string[] lines = IsLot(room) ? new[] { "FOOD", "*plop*", "finally", "hay!" } : new[] { "*plop*", "home!", "again?", "never again", "*thud*", "wheee" };
-                SpeechText(s.pos + new Vector2(0.2f, 1.3f), lines[rng.Next(lines.Length)]);
+                string[] lines = IsLot(room) ? LotDropLines : PenDropLines;
+                SpeechText(s.pos + new Vector2(0.2f, 1.3f), lines[fxRng.Next(lines.Length)]);
             }
         }
+        static readonly string[] LotDropLines = { "FOOD", "*plop*", "finally", "hay!" }, PenDropLines = { "*plop*", "home!", "again?", "never again", "*thud*", "wheee" };
 
         /// grazing spot: inside its room for room sheep, anywhere else (but never in a room) for the rest
         Vector2 PickGrazeTarget(Sheep s)
@@ -440,7 +486,7 @@ namespace Fleeced
             lineShears = false; lineMilks = false;
             foreach (var b in buildings)
             {
-                if (IsRoom(b)) { b.penCount = 0; b.penReady = 0; b.penOut = 0; b.penMembers = 0; b.penHungry = 0; b.penFed = 0; }
+                if (IsRoom(b)) { b.penCount = 0; b.penReady = 0; b.penOut = 0; b.penMembers = 0; b.penHungry = 0; b.penFed = 0; b.leaderMask = 0; b.spareHand = null; }
                 if (!b.Built || b.damaged) continue;
                 if (b.def.kind == BKind.Shed || b.def.kind == BKind.Plant) lineShears = true;
                 if (b.def.kind == BKind.Dairy) lineMilks = true;
@@ -456,8 +502,19 @@ namespace Fleeced
                     if (Ready(s)) p.penReady++;
                     if (s.hunger >= 0.7f) p.penHungry++;
                     if (s.hunger < 0.3f) p.penFed++;
+                    if (s.drove != null && !s.onBelt) MergeDrove(s, p); // a drove that got in some other way joins the herd
+                    // who could lead the herd out right now, and which herd hand has nothing to do (Core/Herd.cs)
+                    if (s.act == Act.ToGate || (!s.Lamb && CanLeave(s, p))) { if (!s.Lamb) p.leaderMask |= 1 << (s.strain * 2 + (s.male ? 1 : 0)); }
+                    else if (s.herdHand) p.spareHand = s; // simulation state only: what the inspector shows must not change the run
                 }
                 else p.penOut++;
+            }
+            foreach (var b in buildings)
+            {
+                var h = b.herd;
+                if (h == null || !IsRoom(b) || h.Adults < 1) continue;
+                if (h.hunger >= 0.7f) b.penHungry = Bump(b.penHungry, h.Adults);
+                if (h.hunger < 0.3f) b.penFed = Bump(b.penFed, h.Adults);
             }
         }
 
@@ -468,19 +525,21 @@ namespace Fleeced
             return n;
         }
 
+        readonly List<Sheep> penMales = new List<Sheep>(), penFemales = new List<Sheep>();
         void SimPen(Building b, float dt)
         {
             for (int i = 0; i < 4; i++) if (b.doorCd[i] > 0) b.doorCd[i] -= dt;
             if (IsLot(b))
             {
-                if (b.penCount == 0) b.status = "Empty. Run a conveyor from a pen door into it";
+                if (Inside(b) < 1) b.status = "Empty. Run a conveyor from a pen door into it";
                 else if (res[(int)Res.Food] < 1) b.status = "NO FOOD in the store! Build farms";
-                else if (b.penHungry > 0) b.status = "Feeding " + b.penHungry + " hungry sheep";
+                else if (b.penHungry > 0) b.status = "Feeding " + UI.Fmt(b.penHungry) + " hungry sheep";
                 else b.status = AnyDoorUsable(b) ? "Everyone is fed and moving on" : "Everyone is fed. Open a door to send them on";
                 return;
             }
             // Breeding Pen: fed, happy rams and ewes inside make lambs
-            var males = new List<Sheep>(); var females = new List<Sheep>();
+            var males = penMales; var females = penFemales; // reused lists (no garbage per pen per step), filled in the same order
+            males.Clear(); females.Clear();
             var inner = PenInterior(b);
             bool fertile = false;
             foreach (var s in sheep)
@@ -493,20 +552,25 @@ namespace Fleeced
             int pairs = Mathf.Min(males.Count, females.Count);
             if (pairs == 0)
             {
-                b.status = b.penCount == 0 ? "Empty" : b.penHungry > 0 ? "Too HUNGRY to breed. Send them to a Feeding Lot" : "Resting (lambs need a fed, happy RAM and EWE)";
+                var hh = b.herd;
+                double hp = hh != null ? System.Math.Min(System.Math.Floor(hh.Ewes), System.Math.Floor(hh.Rams)) : 0;
+                if (hp >= 1) b.status = Members(b) >= RoomCapacity(b) || Population >= FlockCap ? "FULL: no room for lambs. Upgrade it, SHEEP STACKING, or another pen"
+                    : hh.hunger > 1.2f ? "The herd is too HUNGRY to breed. Send it to a Feeding Lot" : "The herd is breeding (" + UI.Fmt(hp) + " couples)";
+                else b.status = Inside(b) < 1 ? "Empty" : b.penHungry > 0 ? "Too HUNGRY to breed. Send them to a Feeding Lot" : "Resting (lambs need a fed, happy RAM and EWE)";
                 return;
             }
-            if (b.penMembers >= RoomCapacity(b)) { b.status = "FULL: no room for lambs. Upgrade it or build another pen"; return; }
-            if (Population >= popCap) { b.status = "ALL PENS FULL: upgrade a pen, build another, or thin the flock"; return; }
+            if (Members(b) >= RoomCapacity(b)) { b.status = "FULL: no room for lambs. Upgrade it or build another pen"; return; }
+            if (Population >= FlockCap) { b.status = "ALL PENS FULL: upgrade a pen, build another, or thin the flock"; return; }
             float sp = 0.45f * Mathf.Pow(pairs, 0.6f) * (fertile ? 1.3f : 1f) * (tech.Contains("matchmaking") ? 1.5f : 1f) * PenBreedMult(b) * (HasGene("love_songs") ? 1.3f : 1f);
             float avgMood = 0; foreach (var s in males) avgMood += s.mood; foreach (var s in females) avgMood += s.mood;
             sp *= Mathf.Clamp(avgMood / (males.Count + females.Count) / 65f, 0.4f, 1.3f);
             if (!tutDone) sp *= CurStep != null && CurStep.id == "breed" ? 2.5f : 0.6f;
+            sp *= (float)PathMult("pen_breed");
             b.breedProgress += dt / DayLength * sp;
             b.status = "Breeding (" + pairs + " couple" + (pairs > 1 ? "s" : "") + ")";
-            if (rng.NextDouble() < dt * 0.5 * Mathf.Min(3, pairs) && IsVisible(b.Center))
+            if (fxRng.NextDouble() < dt * 0.5 * Mathf.Min(3, pairs) && IsVisible(b.Center))
             {
-                var pick = rng.NextDouble() < 0.5 ? males[rng.Next(males.Count)] : females[rng.Next(females.Count)];
+                var pick = fxRng.NextDouble() < 0.5 ? males[fxRng.Next(males.Count)] : females[fxRng.Next(females.Count)];
                 SpawnParticles(pick.pos + Vector2.up * 1.0f, new Color(1f, 0.45f, 0.62f), 2, 1f);
             }
             if (b.breedProgress >= 1f)
@@ -515,13 +579,19 @@ namespace Fleeced
                 var pa = males[rng.Next(males.Count)]; var pb = females[rng.Next(females.Count)];
                 Vector2 at = Vector2.Lerp(pa.pos, pb.pos, 0.5f);
                 at.x = Mathf.Clamp(at.x, inner.xMin, inner.xMax); at.y = Mathf.Clamp(at.y, inner.yMin, inner.yMax);
+                if (!CanName(b)) // the room's names are used up: the lamb (and a twin) joins the herd
+                {
+                    HerdLambOf(b, pa, pb, at);
+                    if (HasGene("twin_genes") && rng.NextDouble() < 0.2 && Members(b) + 1 <= RoomCapacity(b) && Population + 1 <= FlockCap) HerdLambOf(b, pa, pb, at);
+                    return;
+                }
                 var lamb = CreateSheep(at, pa, pb);
                 lamb.pen = b;
-                births++;
-                if (HasGene("twin_genes") && rng.NextDouble() < 0.2 && b.penMembers + 2 <= RoomCapacity(b) && Population < popCap)
+                births = Bump(births, 1);
+                if (HasGene("twin_genes") && rng.NextDouble() < 0.2 && Members(b) + 2 <= RoomCapacity(b) && Population + 2 <= FlockCap)
                 {
-                    var twin = CreateSheep(at + new Vector2(0.35f, 0.1f), pa, pb);
-                    twin.pen = b; births++;
+                    if (CanName(b)) { var twin = CreateSheep(at + new Vector2(0.35f, 0.1f), pa, pb); twin.pen = b; births = Bump(births, 1); }
+                    else HerdLambOf(b, pa, pb, at + new Vector2(0.35f, 0.1f));
                     if (IsVisible(at)) FloatText(at + Vector2.up * 1.6f, "TWINS!", new Color(1f, 0.6f, 0.75f));
                 }
                 SpawnParticles(lamb.pos + Vector2.up * 0.5f, new Color(1f, 0.6f, 0.75f), 14, 2f);
@@ -595,6 +665,7 @@ namespace Fleeced
                 var tr = LeaderArt.Trough(f <= 1 ? 0 : f < 25 ? 1 : f < 90 ? 2 : 3);
                 for (int i = 4; i < b.extras.Count; i++) if (b.extras[i] != null) b.extras[i].GetComponent<SpriteRenderer>().sprite = tr;
             }
+            UpdateHerdVisual(b);
         }
 
         void ClearPen(Building b)
@@ -607,17 +678,21 @@ namespace Fleeced
         public static bool IsSheepMachine(Building b) { return b != null && IsSheepMachineKind(b.def.kind); }
         public static bool IsSheepMachineKind(BKind k) { return k == BKind.Shed || k == BKind.Dairy || k == BKind.Plant || k == BKind.Slaughter || k == BKind.GeneLab; }
 
+        static readonly float[] MachineSpeedByLevel = { 1f, 1.35f, 1.8f, 2.5f, 3.5f };
         float MachineTime(Building b)
         {
             float t = b.def.kind == BKind.Plant ? 0.5f : b.def.kind == BKind.Slaughter ? 1.4f : b.def.kind == BKind.GeneLab ? 1.0f : 1.2f;
-            return t / BuildingDef.At(new[] { 1f, 1.35f, 1.8f, 2.5f, 3.5f }, b.level);
+            t /= BuildingDef.At(MachineSpeedByLevel, b.level);
+            if (b.def.kind == BKind.Shed || b.def.kind == BKind.Plant) t /= (float)PathMult("shear_speed");
+            else if (b.def.kind == BKind.Dairy) t /= (float)PathMult("milk_speed");
+            return t;
         }
 
         bool UsefulIn(Building b, Sheep s)
         {
             if (b.def.kind == BKind.Slaughter || b.def.kind == BKind.GeneLab) return true;
-            if (b.def.kind == BKind.Dairy) return !s.male && !s.Lamb && s.milk >= 0.2f;
-            return s.wool >= 0.2f;
+            if (b.def.kind == BKind.Dairy) return (!s.male && !s.Lamb && s.milk >= 0.2f) || DroveMilk(s, b) >= 1;
+            return s.wool >= 0.2f || DroveShear(s, b) >= 1; // a bald leader with a fluffy drove takes the full time
         }
 
         int BeltDirAt(int x, int y) { return InMap(x, y) ? tiles[x, y].belt : -1; }
@@ -727,6 +802,7 @@ namespace Fleeced
             bool open = !MachineDoorOpen(b, i);
             b.doorTouched[i] = true;
             b.doorOpen[i] = open;
+            ResetPicks(b);
             gateToggles++;
             var o = MachineDoorSpot(b, i);
             if (IsVisible(o))
@@ -789,22 +865,23 @@ namespace Fleeced
                 b.status = !belt ? "Not connected! Run a conveyor INTO it" : !AnyMachineInOpen(b) ? "IN door SHUT: sheep wait on the belt" : "Waiting for sheep on the conveyor";
                 return;
             }
-            if (s.dead || !sheep.Contains(s) || s.act != Act.InMachine) { b.inMachine = null; return; }
+            // s.dead also covers "no longer in the flock": every removal from `sheep` sets dead first, and nothing revives a sheep
+            if (s.dead || s.act != Act.InMachine) { b.inMachine = null; return; }
             b.machineT -= dt * Mathf.Max(0.2f, mult);
             bool chop = b.def.kind == BKind.Slaughter;
             if (!b.machineDone)
             {
                 b.status = (b.def.kind == BKind.GeneLab ? (Genetics.Get(b.geneMode) != null && s.strain != b.geneMode ? "Splicing " : "Sampling ") : b.def.kind == BKind.Dairy ? "Milking " : chop ? "Processing " : "Shearing ") + s.name;
-                if (b.machineDur > 0.5f && IsVisible(b.Center) && rng.NextDouble() < dt * (chop ? 3 : 7))
+                if (b.machineDur > 0.5f && IsVisible(b.Center) && fxRng.NextDouble() < dt * (chop ? 3 : 7))
                 {
                     if (b.def.kind == BKind.GeneLab) SpawnParticles(b.Center + Vector2.up * 1.1f, new Color(0.5f, 1f, 0.6f), 2, 1.8f);
                     else if (b.def.kind == BKind.Dairy) SpawnParticles(b.Center + Vector2.up * 0.9f, new Color(0.95f, 0.97f, 1f), 2, 1.6f);
                     else if (chop) SpawnParticles(b.Center + Vector2.up * 1.1f, new Color(0.7f, 0.1f, 0.1f), 1, 1.6f);
                     else SpawnParticles(b.Center + Vector2.up * 1.1f, new Color(0.96f, 0.94f, 0.88f), 3, 2.2f);
-                    if (rng.NextDouble() < 0.25) Sfx.Play(b.def.kind == BKind.Dairy ? "squirt" : chop ? "thud" : "snip", 0.2f);
+                    if (fxRng.NextDouble() < 0.25) Sfx.Play(b.def.kind == BKind.Dairy ? "squirt" : chop ? "thud" : "snip", 0.2f);
                 }
                 if (b.machineT > 0) return;
-                if (chop) { b.inMachine = null; b.cyclesDone++; machineSheep++; Slaughter(s, b); return; }
+                if (chop) { b.inMachine = null; b.cyclesDone++; machineSheep = Bump(machineSheep, 1 + (s.drove != null ? s.drove.n : 0)); Slaughter(s, b); return; }
                 ProcessInMachine(b, s);
                 if (s.dead) { b.inMachine = null; return; } // CHAOS mode is not always kind
             }
@@ -827,16 +904,22 @@ namespace Fleeced
             b.cyclesDone++;
             s.pos = b.Door + new Vector2(0, 0.25f);
             bool did = false;
+            double follow = s.drove != null ? s.drove.n : 0; // its drove goes through with it, on the same load
             if (b.def.kind == BKind.GeneLab) { ProcessGeneLab(b, s); did = true; }
             else if (b.def.kind == BKind.Dairy)
             {
+                double extra = DroveMilk(s, b);
                 if (s.male) { if (IsVisible(b.Center)) FloatText(b.Center + Vector2.up * 1.3f, "REJECTED: RAM", new Color(1f, 0.6f, 0.5f)); }
-                else if (s.milk >= 0.2f) { DoMilk(s, b, false); did = true; }
+                else if (s.milk >= 0.2f || extra >= 1) { DoMilk(s, b, false, extra); did = true; }
             }
-            else if (s.wool >= 0.2f) { DoShear(s, b, false); did = true; }
+            else
+            {
+                double extra = DroveShear(s, b);
+                if (s.wool >= 0.2f || extra >= 1) { DoShear(s, b, false, extra); did = true; }
+            }
             s.pos = b.Center;
             b.machineDid = did;
-            if (did) { machineSheep++; GiveXp(s, 6); }
+            if (did) { machineSheep = Bump(machineSheep, 1 + follow); GiveXp(s, 6); }
         }
 
         const int ExitNone = -1, ExitJammed = -2;
@@ -867,7 +950,7 @@ namespace Fleeced
                 if (!ExitTile(b, i, out t)) continue;
                 any = true;
                 var p = new Vector2(t.x, t.y) + ExitOffset(i);
-                if (SheepNear(p, 0.5f, s)) continue;
+                if (SheepNear(p, 0.5f, s, ref b.nearHint[i])) continue;
                 if (b.doorPicks[i] < bestN) { bestN = b.doorPicks[i]; best = i; pos = p; }
             }
             if (best >= 0) { b.doorPicks[best]++; return best; }
@@ -894,17 +977,23 @@ namespace Fleeced
         /// what a sheep fetches alive at a Market (null = a typical adult, for tooltips)
         public int LiveSheepPrice(Sheep s, Building market)
         {
-            int p = s != null ? SheepPrice(s) / 2 : Mathf.Max(25, Mathf.RoundToInt(55 * (1 + Population * 0.04f))) / 2;
+            int p = s != null ? SheepPrice(s) / 2 : Mathf.Max(25, Mathf.RoundToInt(55 * SheepPriceFactor)) / 2;
             if (s != null && s.Has("charismatic")) p = Mathf.RoundToInt(p * 1.5f);
             if (market != null) p = Mathf.RoundToInt(p * (1f + (market.level - 1) * 0.05f));
+            if (PathLevel("market_price") > 0) p = Mathf.RoundToInt(p * (float)PathMult("market_price"));
+            if (CoinTier > 0) p = Mathf.RoundToInt(p * CoinTierMult);
             return p;
         }
 
         /// a sheep rides in through a Market door: sold alive
         void SellAtMarket(Sheep s, Building m)
         {
-            int p = LiveSheepPrice(s, m);
-            res[0] += p; totalMade[0] += p; soldAlive++;
+            double follow = s.drove != null ? s.drove.n : 0; // its drove is sold with it
+            double p = LiveSheepPrice(s, m) + DroveLivePrice(s, m);
+            int sold0 = soldAlive;
+            CreditCoins(p, CoinSrc.LiveSale); totalMade[0] += p; soldAlive = Bump(soldAlive, 1 + follow);
+            liveToday += p; soldToday = Bump(soldToday, 1 + follow); // for the day's income measure (Core/Money.cs)
+            s.drove = null; Ledger(-(1 + follow));
             RemoveFromJob(s);
             s.act = Act.Hidden; s.dead = true; s.deathCause = "Sold";
             if (s.go != null) { Destroy(s.go); Destroy(s.shadow.gameObject); s.go = null; }
@@ -912,9 +1001,9 @@ namespace Fleeced
             if (selSheep == s) selSheep = null;
             if (followSheep == s) followSheep = null;
             AddGlobalMod("A friend was sold", -2, 1f);
-            if (IsVisible(m.Center)) { FloatText(m.Center + Vector2.up * 1.6f, "SOLD +" + p + "c", new Color(1f, 0.86f, 0.35f)); Sfx.Play("coin", 0.5f); Sfx.Baa(0.4f); }
-            if (soldAlive == 1) LeaderPop("You are selling LIVE sheep at the Market. Bold. Every one we sell is wool and milk we never see again.", LExpr.Smug, 6f);
-            else if (rng.NextDouble() < 0.25) Log("Sold ^y" + s.name + "^w alive at the Market for " + p + " coins.");
+            if (IsVisible(m.Center)) { FloatText(m.Center + Vector2.up * 1.6f, "SOLD +" + UI.Fmt(p) + "c" + (follow >= 1 ? " (x" + UI.Fmt(follow + 1) + ")" : ""), new Color(1f, 0.86f, 0.35f)); Sfx.Play("coin", 0.5f); Sfx.Baa(0.4f); }
+            if (sold0 < 1 && soldAlive >= 1) LeaderPop("You are selling LIVE sheep at the Market. Bold. Every one we sell is wool and milk we never see again.", LExpr.Smug, 6f);
+            else if (rng.NextDouble() < 0.25) Log("Sold ^y" + s.name + "^w" + (follow >= 1 ? " and " + UI.Fmt(follow) + " of the herd" : "") + " alive at the Market for " + UI.Fmt(p) + " coins.");
         }
 
         void GiveXp(Sheep s, float xp)
@@ -969,34 +1058,40 @@ namespace Fleeced
             if (s != null && s.strain == Genetics.Jumbo) m *= 2f;
             if (s != null && s.strain == Genetics.Wolf) m *= 1.5f;
             if (s != null && s.strain == Genetics.Teacup) m *= 0.5f;
-            if (b != null) m *= BuildingDef.At(new[] { 1f, 1.25f, 1.5f, 2f, 2.6f }, b.level);
+            if (b != null) m *= BuildingDef.At(MuttonByLevel, b.level);
             return Mathf.Max(2, Mathf.RoundToInt(m));
         }
+        static readonly float[] MuttonByLevel = { 1f, 1.25f, 1.5f, 2f, 2.6f };
 
         void Slaughter(Sheep s, Building b)
         {
-            int meat = MuttonYield(s, b);
-            bool belted = Output(b, Res.Mutton, meat);
-            if (!belted) FlyFromWorld("mutton", b.Center + Vector2.up, Mathf.Clamp(meat / 3, 1, 5));
-            slaughtered++;
-            GainDna(1 + (s.strain != 0 || s.variant != Variant.None ? 2 : 0), b.Center);
+            double follow = s.drove != null ? s.drove.n : 0; // its drove goes with it
+            double meat = MuttonYield(s, b) + DroveMutton(s, b);
+            bool belted = Output(b, Res.Mutton, (float)meat);
+            if (!belted) FlyFromWorld("mutton", b.Center + Vector2.up, (int)System.Math.Max(1, System.Math.Min(5, System.Math.Floor(meat / 3))));
+            int sl0 = slaughtered;
+            slaughtered = Bump(slaughtered, 1 + follow);
+            slaughteredToday = Bump(slaughteredToday, 1 + follow); // for the day's income measure (Core/Money.cs)
+            GainDna(1 + (s.strain != 0 || s.variant != Variant.None ? 2 : 0) + follow * (s.strain != 0 ? 3 : 1), b.Center);
             QueueRebirth(s);
-            graveyard.Add(new DeadRecord { name = s.name, cause = "Became mutton at the " + b.def.name + ".", level = s.level, day = Day, age = s.ageDays, traits = TraitList(s) });
+            s.drove = null; Ledger(-(1 + follow));
+            if (!s.herdHand) graveyard.Add(new DeadRecord { name = s.name, cause = "Became mutton at the " + b.def.name + "." + (follow >= 1 ? " " + UI.Fmt(follow) + " of the herd went with " + s.Him + "." : ""), level = s.level, day = Day, age = s.ageDays, traits = TraitList(s) });
             RemoveFromJob(s);
             s.dead = true; s.deathCause = "Mutton"; s.deathDay = Day; s.act = Act.Hidden;
             if (s.go != null) { Destroy(s.go); Destroy(s.shadow.gameObject); s.go = null; }
             sheep.Remove(s);
+            if (follow >= 1 && s.strain == Genetics.Phoenix) HerdRebirths(s.pen, follow);
             if (selSheep == s) selSheep = null;
             if (followSheep == s) followSheep = null;
             AddGlobalMod("The Slaughterhouse is busy", -4, 1f);
             if (IsVisible(b.Center))
             {
-                FloatText(b.Center + Vector2.up * 1.8f, "MUTTON +" + meat, new Color(1f, 0.55f, 0.5f));
+                FloatText(b.Center + Vector2.up * 1.8f, "MUTTON +" + UI.Fmt(meat) + (follow >= 1 ? " (x" + UI.Fmt(follow + 1) + ")" : ""), new Color(1f, 0.55f, 0.5f));
                 SpawnParticles(b.Center + Vector2.up * 0.9f, new Color(0.72f, 0.1f, 0.1f), 6, 2f);
                 Sfx.Play("crunch", 0.4f, 0.8f);
             }
             if (rng.NextDouble() < 0.12) AddDecal("blood", b.Door + new Vector2((float)rng.NextDouble() - 0.5f, -0.1f));
-            if (slaughtered == 1 || rng.NextDouble() < 0.25) Log("^r" + s.name + "^w became mutton. The flock is pretending not to notice.");
+            if ((sl0 < 1 && slaughtered >= 1) || rng.NextDouble() < 0.25) Log("^r" + s.name + "^w" + (follow >= 1 ? " and " + UI.Fmt(follow) + " of the herd" : "") + " became mutton. The flock is pretending not to notice.");
         }
 
         void EjectFromMachine(Building b)
@@ -1119,14 +1214,18 @@ namespace Fleeced
             bool doorsOn = UiOn("gate");
             var placed = new List<Rect>(); // labels drawn so far, so machine door tags can dodge them
             DrawBuildingPlates(sc, placed);
+            DrawDroveBadges(sc);
             foreach (var b in buildings)
             {
                 if (!IsRoom(b) || !RoomActive(b)) continue;
                 // room badge: name and how full it is
                 {
                     Vector2 tl = ToGui(new Vector2(b.x + 0.1f, b.y + b.def.h + 0.95f), sc);
-                    string badge = (IsLot(b) ? "FEEDING LOT " : "PEN ") + b.penCount + "/" + RoomCapacity(b) + (b.penHungry > 0 ? "  ^o" + b.penHungry + " hungry" : "");
-                    if (tl.x > -80 && tl.y > -20 && tl.x < W && tl.y < H) PixelFont.DrawOutlined(Mathf.Round(tl.x), Mathf.Round(tl.y), badge, b.penCount >= RoomCapacity(b) ? UI.Bad : UI.Text);
+                    if (tl.x > -80 && tl.y > -20 && tl.x < W && tl.y < H) // built only for a badge on screen
+                    {
+                        string badge = HerdIn(b) >= 1 ? RoomBadge(b) : (IsLot(b) ? "FEEDING LOT " : "PEN ") + b.penCount + "/" + RoomCapacity(b) + (b.penHungry > 0 ? "  ^o" + b.penHungry + " hungry" : "");
+                        PixelFont.DrawOutlined(Mathf.Round(tl.x), Mathf.Round(tl.y), badge, Inside(b) >= RoomCapacity(b) ? UI.Bad : UI.Text);
+                    }
                 }
                 if (!doorsOn) continue;
                 for (int i = 0; i < 4; i++)

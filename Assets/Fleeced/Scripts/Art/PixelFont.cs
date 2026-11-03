@@ -130,6 +130,9 @@ namespace Fleeced
             atlas = canvas.ToTexture();
         }
 
+        /// the font can draw this character (anything else is drawn as '?')
+        public static bool HasGlyph(char c) { if (glyphs == null) Init(); return glyphs.ContainsKey(c); }
+
         static Glyph G(char c)
         {
             if (glyphs == null) Init();

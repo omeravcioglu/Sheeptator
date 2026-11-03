@@ -22,15 +22,18 @@ namespace Fleeced
 
         public static readonly float[] ShedYield = { 1f, 1.3f, 1.7f, 2.2f, 3f };
         public static readonly float[] BarnSpeed = { 1f, 1.2f, 1.5f, 2.2f, 3f };
-        public int HouseBeds(int lv) { return BuildingDef.At(new[] { 4, 7, 12, 20, 32 }, lv) + (tech.Contains("bunk_beds") ? 2 : 0); }
-        public float StorageCapOf(int lv) { return BuildingDef.At(new float[] { 150, 350, 700, 1500, 3000 }, lv); }
-        public float WheelPower(int lv) { return BuildingDef.At(new float[] { 4, 6, 9, 13, 18 }, lv); }
-        public float FarmOut(Building b) { return 10f * b.LM * (tech.Contains("fertilizer") ? 1.3f : 1f); }
+        // per-level tables, allocated once (ComputeGlobals reads them every step)
+        static readonly int[] HouseBedsByLevel = { 4, 7, 12, 20, 32 };
+        static readonly float[] StorageCapByLevel = { 150, 350, 700, 1500, 3000 }, WheelPowerByLevel = { 4, 6, 9, 13, 18 };
+        public int HouseBeds(int lv) { return BuildingDef.At(HouseBedsByLevel, lv) + (tech.Contains("bunk_beds") ? 2 : 0); }
+        public float StorageCapOf(int lv) { return BuildingDef.At(StorageCapByLevel, lv); }
+        public float WheelPower(int lv) { return BuildingDef.At(WheelPowerByLevel, lv); }
+        public float FarmOut(Building b) { return 10f * b.LM * (tech.Contains("fertilizer") ? 1.3f : 1f) * (float)PathMult("farm_food"); }
 
         // ---------------- placement / lifecycle ----------------
         public Building PlaceBuilding(BuildingDef d, int tx, int ty, bool instant)
         {
-            if (!instant) res[0] -= d.cost[0];
+            if (!instant) SpendCoins(d.cost[0], CoinSrc.Build);
             bool pen = IsRoomKind(d.kind);
             var b = new Building { id = NextId(), def = d, x = tx, y = ty, construct = instant || pen ? 1f : 0f };
             for (int x = tx; x < tx + d.w; x++)
@@ -94,19 +97,21 @@ namespace Fleeced
         public void Demolish(Building b)
         {
             int refund = b.def.cost[0] / 2;
-            res[0] += refund;
+            CreditCoins(refund, CoinSrc.Refund);
             foreach (var w in b.workers.ToArray()) { RemoveFromJob(w); w.job = Job.Grazer; }
             for (int i = 0; i < ResInfo.Count; i++) res[i] += b.inbuf[i];
             if (b.client != null) { b.client.act = Act.Wander; b.client = null; }
             foreach (var c in b.clients) c.act = Act.Wander;
             EjectFromMachine(b);
             var homeless = new List<Sheep>();
+            var herd = b.herd; b.herd = null; // it moves to another room once this one is gone
             if (IsRoom(b)) { foreach (var s in sheep) if (s.pen == b) homeless.Add(s); ClearPen(b); }
             else for (int x = b.x; x < b.x + b.def.w; x++) for (int y = b.y; y < b.y + b.def.h; y++) tiles[x, y].building = null;
             foreach (var e in b.extras) Destroy(e);
             Destroy(b.go);
             buildings.Remove(b);
             foreach (var s in homeless) AssignPen(s);
+            RehomeHerd(herd, b.Center, b.def.name);
             foreach (var s in sheep) if (s.workplace == b) s.workplace = null;
             if (selBuilding == b) selBuilding = null;
             SpawnParticles(b.Center, new Color(0.6f, 0.5f, 0.38f), 24, 3f);
@@ -131,7 +136,7 @@ namespace Fleeced
         {
             if (UpgradeBlocker(b) != null) return;
             EjectFromMachine(b);
-            res[0] -= b.def.cost[b.level];
+            SpendCoins(b.def.cost[b.level], CoinSrc.Upgrade);
             {
                 Res r1, r2;
                 int rn = RareUpgradeNeed(b, out r1, out r2);
@@ -150,6 +155,9 @@ namespace Fleeced
         public int MaxBuildingLevel() { int m = 0; foreach (var b in buildings) if (b.Built) m = Mathf.Max(m, b.level); return m; }
 
         // ---------------- globals ----------------
+        /// how many sheep the farm takes in: its pens' space, named sheep and herds alike (NamedCap limits the named ones)
+        public int FlockCap { get { return popCap; } }
+
         void ComputeGlobals()
         {
             popCap = 0; storageCap = 200; powerMade = 0; powerNeed = 0; guardPower = 0; float decor = 0, flowers = 0;
@@ -160,7 +168,7 @@ namespace Fleeced
                 if (!ok) continue;
                 switch (b.def.kind)
                 {
-                    case BKind.Pen: popCap += RoomCapacity(b); break; // the flock lives in its pens
+                    case BKind.Pen: popCap = Bump(popCap, RoomCapacity(b)); break; // the flock lives in its pens
                     case BKind.Storage: storageCap += StorageCapOf(lv) * 1.25f; break;
                     case BKind.Spa: decor += lv == 1 ? 4 : lv == 2 ? 7 : 10; break;
                     case BKind.Statue: decor += lv == 1 ? 6 : lv == 2 ? 9 : 12; break;
@@ -173,6 +181,7 @@ namespace Fleeced
                     if (need > 0) powerNeed += need;
                 }
             }
+            storageCap *= (float)PathMult("storage_space"); // Bigger Barns (x1 until upgraded)
             decorMood = decor + Mathf.Min(10, flowers);
             if (flags.Contains("cult_joined")) decorMood += 0; // handled by mods
             foreach (var b in buildings)
@@ -184,7 +193,8 @@ namespace Fleeced
             StrainGlobals();
             if (flags.Contains("gerald_guard")) guardPower += 2f;
             powerFactor = powerNeed <= 0 ? 1f : Mathf.Clamp01(powerMade / powerNeed);
-            globalMods.RemoveAll(m => m.until < Day);
+            // expired flock-wide mood mods; backwards, so the survivors keep their order (RemoveAll's closure allocated every step)
+            for (int i = globalMods.Count - 1; i >= 0; i--) if (globalMods[i].until < Day) globalMods.RemoveAt(i);
 
             // housing: the newest sheep beyond capacity are homeless
             int housed = 0;
@@ -406,8 +416,8 @@ namespace Fleeced
                 {
                     int r = (int)ResInfo.Sellable[k];
                     if (!autoSell[r] || res[r] < 1) continue;
-                    int n = Mathf.Min(batch, Mathf.FloorToInt((float)res[r]));
-                    int earned = Sell((Res)r, n, true);
+                    int n = (int)System.Math.Min(batch, System.Math.Floor(res[r]));
+                    int earned = Sell((Res)r, n, true, b); // at this Market's own level
                     if (earned > 0 && IsVisible(b.Center)) FloatText(b.Center + Vector2.up * 1.3f, "+" + earned + "c", new Color(1f, 0.86f, 0.35f));
                     break;
                 }
@@ -427,24 +437,34 @@ namespace Fleeced
             if (s.Has("fluffy")) y *= 1.1f;
             if (s.Has("messy")) y *= 0.9f;
             if (flags.Contains("illegal_shears")) y *= 1.5f;
+            y *= (float)PathMult("shear_yield");
             return Mathf.Max(1, Mathf.RoundToInt(y));
         }
 
-        public void DoShear(Sheep s, Building b, bool manual)
+        /// `extra`: what the sheep's drove gives at the same machine (DroveShear), on the same load. The sheep itself is shorn
+        /// too, unless only its drove had wool to give.
+        public void DoShear(Sheep s, Building b, bool manual, double extra = 0)
         {
             Res wr = ShearRes(s);
-            int y = Mathf.Max(1, Mathf.RoundToInt(ShearYield(s, b) * ShearAmount(s)));
+            bool self = s.wool >= 0.2f || extra < 1;
+            int y = self ? Mathf.Max(1, Mathf.RoundToInt(ShearYield(s, b) * ShearAmount(s))) : 0;
+            double all = y + System.Math.Max(0, extra);
             bool belted = false;
-            if (b != null) belted = Output(b, wr, y); else Gain(wr, y);
-            if (!belted) FlyFromWorld(ResInfo.Icon[(int)wr], s.pos + Vector2.up * 1.2f, Mathf.Clamp(y / 3, 1, 5));
-            s.wool = 0;
-            s.tremble = 5f;
-            AddMod(s, "Recently shaved (cold)", -4, 0.6f);
-            FloatText(s.pos + Vector2.up * 1.2f, ResInfo.Names[(int)wr].ToUpper() + " +" + y, wr == Res.Wool ? new Color(0.95f, 0.95f, 0.9f) : new Color(1f, 0.85f, 0.4f));
+            if (b != null) belted = Output(b, wr, (float)all); else Gain(wr, all);
+            if (!belted) FlyFromWorld(ResInfo.Icon[(int)wr], s.pos + Vector2.up * 1.2f, (int)System.Math.Max(1, System.Math.Min(5, System.Math.Floor(all / 3))));
+            string times = "";
+            if (extra >= 1 && s.drove != null) { shearCount = Bump(shearCount, s.drove.n); s.drove.wool = 0; times = " (x" + UI.Fmt(s.drove.n + 1) + ")"; }
+            if (self)
+            {
+                s.wool = 0;
+                s.tremble = 5f;
+                AddMod(s, "Recently shaved (cold)", -4, 0.6f);
+            }
+            FloatText(s.pos + Vector2.up * 1.2f, ResInfo.Names[(int)wr].ToUpper() + " +" + UI.Fmt(all) + times, wr == Res.Wool ? new Color(0.95f, 0.95f, 0.9f) : new Color(1f, 0.85f, 0.4f));
             SpawnParticles(s.pos + Vector2.up * 0.5f, new Color(0.96f, 0.94f, 0.88f), 12, 2.5f);
             if (rng.NextDouble() < 0.4) AddDecal("wool", s.pos + new Vector2((float)rng.NextDouble() - 0.5f, -0.1f));
             Sfx.Play("snip", 0.7f);
-            shearCount++;
+            if (self) shearCount = Bump(shearCount, 1);
             if (manual && rng.NextDouble() < 0.025 * AccidentMult(s))
             {
                 s.bloody = 0.5f; AddMod(s, "You nicked me", -8, 1);
@@ -463,23 +483,32 @@ namespace Fleeced
             if (s.Has("fertile")) y *= 1.15f;
             if (s.variant == Variant.Golden) y *= 2f;
             y *= 1f + (s.level - 1) * 0.05f;
+            y *= (float)PathMult("milk_yield");
             return Mathf.Max(1, Mathf.RoundToInt(y));
         }
 
-        public void DoMilk(Sheep s, Building b, bool manual)
+        /// `extra`: what the ewe's drove gives at the same machine (DroveMilk), on the same load
+        public void DoMilk(Sheep s, Building b, bool manual, double extra = 0)
         {
             Res mr = MilkRes(s);
-            int y = Mathf.Max(1, Mathf.RoundToInt(MilkYield(s, b) * MilkAmount(s)));
+            bool self = s.milk >= 0.2f || extra < 1;
+            int y = self ? Mathf.Max(1, Mathf.RoundToInt(MilkYield(s, b) * MilkAmount(s))) : 0;
+            double all = y + System.Math.Max(0, extra);
             bool belted = false;
-            if (b != null) belted = Output(b, mr, y); else Gain(mr, y);
-            if (!belted) FlyFromWorld(ResInfo.Icon[(int)mr], s.pos + Vector2.up * 1.2f, Mathf.Clamp(y / 2, 1, 5));
-            s.milk = 0;
-            s.tremble = Mathf.Max(s.tremble, 1.5f);
-            AddMod(s, "Milked against my will", -2, 0.5f);
-            FloatText(s.pos + Vector2.up * 1.2f, ResInfo.Names[(int)mr].ToUpper() + " +" + y, mr == Res.Milk ? new Color(0.82f, 0.9f, 1f) : new Color(1f, 0.92f, 0.6f));
+            if (b != null) belted = Output(b, mr, (float)all); else Gain(mr, all);
+            if (!belted) FlyFromWorld(ResInfo.Icon[(int)mr], s.pos + Vector2.up * 1.2f, (int)System.Math.Max(1, System.Math.Min(5, System.Math.Floor(all / 2))));
+            string times = "";
+            if (extra >= 1 && s.drove != null) { milkCount = Bump(milkCount, s.drove.n); s.drove.milk = 0; times = " (x" + UI.Fmt(s.drove.n + 1) + ")"; }
+            if (self)
+            {
+                s.milk = 0;
+                s.tremble = Mathf.Max(s.tremble, 1.5f);
+                AddMod(s, "Milked against my will", -2, 0.5f);
+            }
+            FloatText(s.pos + Vector2.up * 1.2f, ResInfo.Names[(int)mr].ToUpper() + " +" + UI.Fmt(all) + times, mr == Res.Milk ? new Color(0.82f, 0.9f, 1f) : new Color(1f, 0.92f, 0.6f));
             SpawnParticles(s.pos + Vector2.up * 0.35f, new Color(0.96f, 0.97f, 1f), 9, 2f);
             Sfx.Play("squirt", 0.6f, 0.9f + Random.Range(0f, 0.25f));
-            milkCount++;
+            if (self) milkCount = Bump(milkCount, 1);
             if (manual && rng.NextDouble() < 0.03 * AccidentMult(s))
             {
                 float lost = Mathf.Min((float)res[(int)Res.Milk], y * 0.5f);
@@ -516,15 +545,17 @@ namespace Fleeced
         }
 
         // ---------------- breeding ----------------
+        readonly List<Sheep> barnMales = new List<Sheep>(), barnFemales = new List<Sheep>();
         void SimBarn(Building b, float dt)
         {
-            var males = new List<Sheep>(); var females = new List<Sheep>();
+            var males = barnMales; var females = barnFemales; // reused lists (no garbage per barn per step), filled in the same order
+            males.Clear(); females.Clear();
             foreach (var w in b.workers) if (w.act == Act.Working && w.CanWork) { if (w.male) males.Add(w); else females.Add(w); }
             int pairs = Mathf.Min(males.Count, females.Count);
             while (b.pairProgress.Count < pairs) b.pairProgress.Add(0);
             if (pairs == 0) { b.status = b.workers.Count == 0 ? "No breeders" : "Needs a ewe AND a ram"; return; }
             b.status = "Romance in progress";
-            if (rng.NextDouble() < dt * 0.9 && IsVisible(b.Center)) SpawnParticles(b.Door + Vector2.up * 1.1f, new Color(1f, 0.45f, 0.62f), 2, 1.1f);
+            if (fxRng.NextDouble() < dt * 0.9 && IsVisible(b.Center)) SpawnParticles(b.Door + Vector2.up * 1.1f, new Color(1f, 0.45f, 0.62f), 2, 1.1f);
             for (int i = 0; i < pairs; i++)
             {
                 var m = males[i]; var f = females[i];
@@ -536,10 +567,10 @@ namespace Fleeced
                 b.pairProgress[i] = Mathf.Min(1f, b.pairProgress[i] + dt / DayLength * sp);
                 if (b.pairProgress[i] >= 1f)
                 {
-                    if (Population >= popCap) { b.status = "The pens are full"; continue; }
+                    if (Population >= popCap || !CanName(null)) { b.status = "The pens are full"; continue; }
                     b.pairProgress[i] = 0;
                     var lamb = CreateSheep(b.Door + new Vector2((float)rng.NextDouble() - 0.5f, -0.3f), m, f);
-                    births++;
+                    births = Bump(births, 1);
                     SpawnParticles(lamb.pos + Vector2.up * 0.5f, new Color(1f, 0.6f, 0.75f), 12, 2f);
                     Sfx.Baa(0.7f);
                     string extra = lamb.variant != Variant.None ? " ^p(" + VariantName(lamb.variant) + "!)" : "";
@@ -701,7 +732,7 @@ namespace Fleeced
 
         void UpdateBuildingVisual(Building b, float rdt, float dt)
         {
-            if (IsRoom(b)) { if (b.construct < 1f && rng.NextDouble() < rdt * 2) SpawnParticles(new Vector2(b.x + (float)rng.NextDouble() * b.def.w, b.y + 0.3f), new Color(0.6f, 0.5f, 0.38f), 2, 1f); UpdatePenVisual(b); return; }
+            if (IsRoom(b)) { if (b.construct < 1f && fxRng.NextDouble() < rdt * 2) SpawnParticles(new Vector2(b.x + (float)fxRng.NextDouble() * b.def.w, b.y + 0.3f), new Color(0.6f, 0.5f, 0.38f), 2, 1f); UpdatePenVisual(b); return; }
             if (IsSheepMachine(b) && b.construct >= 1f)
             {
                 // the machine rattles while somebody is inside
@@ -726,7 +757,7 @@ namespace Fleeced
             if (b.construct < 1f)
             {
                 if (!b.scaffold.gameObject.activeSelf) RefreshBuildingSprite(b);
-                if (rng.NextDouble() < rdt * 2) SpawnParticles(new Vector2(b.x + (float)rng.NextDouble() * b.def.w, b.y + 0.3f), new Color(0.6f, 0.5f, 0.38f), 2, 1f);
+                if (fxRng.NextDouble() < rdt * 2) SpawnParticles(new Vector2(b.x + (float)fxRng.NextDouble() * b.def.w, b.y + 0.3f), new Color(0.6f, 0.5f, 0.38f), 2, 1f);
                 return;
             }
             if (b.scaffold.gameObject.activeSelf) RefreshBuildingSprite(b);
@@ -738,9 +769,9 @@ namespace Fleeced
             b.fxTimer = 0.35f;
             Vector2 o = new Vector2(b.x, b.y);
             foreach (var p in b.art.smoke) SpawnSmoke(o + p, b.level >= 3 ? 1.2f + (b.level - 3) * 0.3f : 0.8f);
-            foreach (var p in b.art.steam) if (rng.NextDouble() < 0.5) SpawnSteam(o + p);
-            foreach (var p in b.art.sparks) if (rng.NextDouble() < 0.35) SpawnParticles(o + p, b.def.kind == BKind.Lab ? new Color(0.5f, 1f, 0.7f) : new Color(1f, 0.9f, 0.4f), 3, 1.5f);
-            if (b.Danger >= 0.02f && rng.NextDouble() < 0.15) SpawnParticles(b.Door + Vector2.up * 0.3f, new Color(1f, 0.85f, 0.3f), 2, 2f);
+            foreach (var p in b.art.steam) if (fxRng.NextDouble() < 0.5) SpawnSteam(o + p);
+            foreach (var p in b.art.sparks) if (fxRng.NextDouble() < 0.35) SpawnParticles(o + p, b.def.kind == BKind.Lab ? new Color(0.5f, 1f, 0.7f) : new Color(1f, 0.9f, 0.4f), 3, 1.5f);
+            if (b.Danger >= 0.02f && fxRng.NextDouble() < 0.15) SpawnParticles(b.Door + Vector2.up * 0.3f, new Color(1f, 0.85f, 0.3f), 2, 2f);
         }
     }
 }

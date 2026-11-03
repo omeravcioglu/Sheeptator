@@ -46,6 +46,7 @@ namespace Fleeced
             sheep.Add(s);
             SpawnSheepGO(s);
             AssignPen(s);
+            Ledger(1);
             return s;
         }
 
@@ -111,6 +112,7 @@ namespace Fleeced
             s.shadow.sprite = EnvArt.Shadow();
             s.shadow.color = new Color(0, 0, 0, 0.22f);
             s.shadow.sortingOrder = -30500;
+            s.lookCode = -1; // the new renderer has no sprite yet
             UpdateSheepVisual(s, 0);
         }
 
@@ -217,70 +219,86 @@ namespace Fleeced
             return m;
         }
 
+        /// ComputeMoodTarget's running total. It replaces a closure, and t stays a heap float like the captured local was,
+        /// so every add rounds exactly as before. One is reused: the sim and the inspector never compute a mood inside another.
+        sealed class MoodSum
+        {
+            public float t;
+            public List<string> reasons;
+            public void Add(string l, float v) { t += v; if (reasons != null && Mathf.Abs(v) >= 0.5f) reasons.Add((v > 0 ? "^g+" : "^r") + Mathf.RoundToInt(v) + " ^w" + l); }
+        }
+        readonly MoodSum moodSum = new MoodSum();
+
         public float ComputeMoodTarget(Sheep s, List<string> reasons)
         {
-            float t = 58;
-            System.Action<string, float> add = (l, v) => { t += v; if (reasons != null && Mathf.Abs(v) >= 0.5f) reasons.Add((v > 0 ? "^g+" : "^r") + Mathf.RoundToInt(v) + " ^w" + l); };
-            if (s.Has("lazy")) add("Lazy (content)", 5);
-            if (s.Has("stupid")) add("Blissfully stupid", 8);
-            if (s.Has("loyal")) add("Loyal", 3);
-            if (s.Has("philosopher")) add("Existential dread", -3);
-            if (s.variant == Variant.Black) add("Edgy aesthetic", 10);
-            if (s.hunger < 0.6f) add("Well fed", 8);
-            else if (s.hunger > 2f) add("STARVING", -40);
-            else if (s.hunger > 1.2f) add("Hungry", -18);
-            if (s.homeless) add("Homeless", -20);
-            if (wagePolicy == 1 && s.job != Job.Grazer) add("Carrot wages", 6);
-            if (wagePolicy == 2 && s.job != Job.Grazer) add("Coin wages", 12);
-            if (s.Has("greedy") && wagePolicy != 2 && s.job != Job.Grazer) add("Greedy: wants coins", -10);
-            if (decorMood != 0) add("Decorations", decorMood);
+            var sum = moodSum;
+            sum.t = 58; sum.reasons = reasons;
+            if (s.Has("lazy")) sum.Add("Lazy (content)", 5);
+            if (s.Has("stupid")) sum.Add("Blissfully stupid", 8);
+            if (s.Has("loyal")) sum.Add("Loyal", 3);
+            if (s.Has("philosopher")) sum.Add("Existential dread", -3);
+            if (s.variant == Variant.Black) sum.Add("Edgy aesthetic", 10);
+            if (s.hunger < 0.6f) sum.Add("Well fed", 8);
+            else if (s.hunger > 2f) sum.Add("STARVING", -40);
+            else if (s.hunger > 1.2f) sum.Add("Hungry", -18);
+            if (s.homeless) sum.Add("Homeless", -20);
+            if (wagePolicy == 1 && s.job != Job.Grazer) sum.Add("Carrot wages", 6);
+            if (wagePolicy == 2 && s.job != Job.Grazer) sum.Add("Coin wages", 12);
+            if (s.Has("greedy") && wagePolicy != 2 && s.job != Job.Grazer) sum.Add("Greedy: wants coins", -10);
+            if (decorMood != 0) sum.Add("Decorations", decorMood);
             if (s.workplace != null)
             {
                 float d = s.workplace.Danger;
-                if (d >= 0.03f) add("Terrifying workplace", -12);
-                else if (d >= 0.015f) add("Dangerous workplace", -7);
-                else if (d >= 0.008f) add("Risky workplace", -3);
-                if (s.workplace.unsafeMode) add("Safety guards removed", -6);
-                if (s.workplace.buffUntil > Day && s.workplace.buffMult > 1.05f) add("Blamed & pressured", -5);
+                if (d >= 0.03f) sum.Add("Terrifying workplace", -12);
+                else if (d >= 0.015f) sum.Add("Dangerous workplace", -7);
+                else if (d >= 0.008f) sum.Add("Risky workplace", -3);
+                if (s.workplace.unsafeMode) sum.Add("Safety guards removed", -6);
+                if (s.workplace.buffUntil > Day && s.workplace.buffMult > 1.05f) sum.Add("Blamed & pressured", -5);
             }
-            if (s.job == Job.Grazer && !s.Lamb) add("Grazing life", 5);
-            if (s.strain == Genetics.Gold) add("Feels expensive", 4);
-            else if (s.strain == Genetics.Glow) add("Feels warm (radioactive)", -3);
-            else if (s.strain == Genetics.Silk) add("Silky smooth", 3);
-            else if (s.strain == Genetics.Jumbo) add("Big boned", 2);
-            else if (s.strain == Genetics.Cream) add("Creamy", 2);
-            else if (s.strain == Genetics.Turbo) add("Zoom zoom", 2);
-            else if (s.strain == Genetics.Teacup) add("Tiny and adored", 5);
-            else if (s.strain == Genetics.Candy) add("Sugar rush", 3);
-            else if (s.strain == Genetics.Choco) add("Chocolatey", 2);
-            else if (s.strain == Genetics.Wolf) add("Hungry for... something", -2);
-            else if (s.strain == Genetics.Sparky) add("Static cling", -1);
-            else if (s.strain == Genetics.Splitter) add("Feels like two sheep", 1);
-            else if (s.strain == Genetics.Phoenix) add("Eternal", 4);
-            if (s.pen != null && s.job == Job.Grazer && s.pen.penMembers > RoomCapacity(s.pen)) add("Crowded " + (IsLot(s.pen) ? "feeding lot" : "pen"), -8);
-            if (Season == 3 && s.wool < 0.3f) add("Freezing (shaved in winter)", -12);
-            if (Season == 1 && s.wool > 0.98f) add("Too fluffy for summer", -6);
-            if (s.injured > 0) add("Injured", -10);
-            if (s.flattened > 0) add("Flattened", -5);
-            if (s.burned > 0) add("Slightly on fire", -6);
-            if (s.sick > 0) add("Sick", -10);
-            if (s.Has("carrots") && HasBuildingLevel(BKind.Farm, 2)) add("CARROTS EXIST", 8);
-            foreach (var m in s.mods) add(m.label, m.value);
-            foreach (var m in globalMods) add(m.label, m.value);
-            if (s.Has("dramatic")) t = 50 + (t - 50) * 1.6f;
-            return Mathf.Clamp(t, 0, 100);
+            if (s.job == Job.Grazer && !s.Lamb) sum.Add("Grazing life", 5);
+            if (s.strain == Genetics.Gold) sum.Add("Feels expensive", 4);
+            else if (s.strain == Genetics.Glow) sum.Add("Feels warm (radioactive)", -3);
+            else if (s.strain == Genetics.Silk) sum.Add("Silky smooth", 3);
+            else if (s.strain == Genetics.Jumbo) sum.Add("Big boned", 2);
+            else if (s.strain == Genetics.Cream) sum.Add("Creamy", 2);
+            else if (s.strain == Genetics.Turbo) sum.Add("Zoom zoom", 2);
+            else if (s.strain == Genetics.Teacup) sum.Add("Tiny and adored", 5);
+            else if (s.strain == Genetics.Candy) sum.Add("Sugar rush", 3);
+            else if (s.strain == Genetics.Choco) sum.Add("Chocolatey", 2);
+            else if (s.strain == Genetics.Wolf) sum.Add("Hungry for... something", -2);
+            else if (s.strain == Genetics.Sparky) sum.Add("Static cling", -1);
+            else if (s.strain == Genetics.Splitter) sum.Add("Feels like two sheep", 1);
+            else if (s.strain == Genetics.Phoenix) sum.Add("Eternal", 4);
+            if (s.pen != null && s.job == Job.Grazer && Members(s.pen) > RoomCapacity(s.pen)) sum.Add(IsLot(s.pen) ? "Crowded feeding lot" : "Crowded pen", -8);
+            if (Season == 3 && s.wool < 0.3f) sum.Add("Freezing (shaved in winter)", -12);
+            if (Season == 1 && s.wool > 0.98f) sum.Add("Too fluffy for summer", -6);
+            if (s.injured > 0) sum.Add("Injured", -10);
+            if (s.flattened > 0) sum.Add("Flattened", -5);
+            if (s.burned > 0) sum.Add("Slightly on fire", -6);
+            if (s.sick > 0) sum.Add("Sick", -10);
+            if (s.Has("carrots") && HasBuildingLevel(BKind.Farm, 2)) sum.Add("CARROTS EXIST", 8);
+            foreach (var m in s.mods) sum.Add(m.label, m.value);
+            foreach (var m in globalMods) sum.Add(m.label, m.value);
+            if (s.Has("dramatic")) sum.t = 50 + (sum.t - 50) * 1.6f;
+            sum.reasons = null; // don't hold on to the inspector's list
+            return Mathf.Clamp(sum.t, 0, 100);
         }
 
         public void AddMod(Sheep s, string label, float v, float days)
         {
-            s.mods.RemoveAll(m => m.label == label);
+            DropMods(s.mods, label);
             s.mods.Add(new MoodMod(label, v, Day + days));
         }
         public List<MoodMod> globalMods = new List<MoodMod>();
         public void AddGlobalMod(string label, float v, float days)
         {
-            globalMods.RemoveAll(m => m.label == label);
+            DropMods(globalMods, label);
             globalMods.Add(new MoodMod(label, v, Day + days));
+        }
+        /// removes the mods with this label. Going backwards keeps the rest in order, as RemoveAll did, without a closure per call.
+        static void DropMods(List<MoodMod> mods, string label)
+        {
+            for (int i = mods.Count - 1; i >= 0; i--) if (mods[i].label == label) mods.RemoveAt(i);
         }
 
         // ---------------- per-tick sim ----------------
@@ -305,7 +323,8 @@ namespace Fleeced
             s.sick = Mathf.Max(0, s.sick - dd);
             s.tremble = Mathf.Max(0, s.tremble - dt);
             s.unconscious = Mathf.Max(0, s.unconscious - dt);
-            s.mods.RemoveAll(m => m.until < Day);
+            // expired mods: RemoveAll without a new delegate per sheep. Backwards keeps the rest in order; Day can't change in here
+            if (s.mods.Count > 0) { float day = Day; for (int i = s.mods.Count - 1; i >= 0; i--) if (s.mods[i].until < day) s.mods.RemoveAt(i); }
 
             // hunger & eating. Lambs drink milk. Room sheep only eat in a Feeding Lot (or by grazing);
             // workers and free-roaming sheep eat from the store.
@@ -345,6 +364,7 @@ namespace Fleeced
             if (HasGene("big_fleece")) wg *= 1.25f;
             if (s.mood > 75) wg *= 1.15f;
             if (s.hunger > 1.5f) wg *= 0.2f;
+            wg *= (float)PathMult("wool_growth");
             s.wool = Mathf.Min(1.25f, s.wool + dd * wg);
 
             // milk (ewes only)
@@ -387,8 +407,8 @@ namespace Fleeced
                         if (meals > 0 && IsVisible(s.pos))
                         {
                             SpawnParticles(s.pos + new Vector2(s.faceRight ? 0.4f : -0.4f, 0.35f), new Color(0.55f, 0.75f, 0.3f), 4, 1.2f);
-                            if (rng.NextDouble() < 0.35) SpeechText(s.pos + new Vector2(0.2f, 1.3f), rng.NextDouble() < 0.5 ? "nom" : "*crunch*");
-                            if (rng.NextDouble() < 0.25) Sfx.Play("nom", 0.25f);
+                            if (fxRng.NextDouble() < 0.35) SpeechText(s.pos + new Vector2(0.2f, 1.3f), fxRng.NextDouble() < 0.5 ? "nom" : "*crunch*");
+                            if (fxRng.NextDouble() < 0.25) Sfx.Play("nom", 0.25f);
                         }
                         s.eatAt = null;
                         s.act = Act.Wander;
@@ -466,7 +486,7 @@ namespace Fleeced
             if (s.refuse > 0) s.status = "On strike (personally)";
             else if (s.sick > 0) s.status = "Sick. Coughing up wool";
             else if (s.Lamb) s.status = "Being a lamb";
-            else if (s.job != Job.Grazer && s.workplace == null) s.status = "Looking for a " + Jobs.Get(s.job).name + " job";
+            else if (s.job != Job.Grazer && s.workplace == null) s.status = LookingForJob(s.job);
             else if (s.job != Job.Grazer && s.workplace != null && !s.workplace.Built) s.status = "Waiting for construction";
             else if (s.job != Job.Grazer && s.workplace != null && s.workplace.damaged) s.status = "Workplace is broken";
             SimGraze(s, dt, s.job == Job.Grazer && s.CanWork);
@@ -477,7 +497,7 @@ namespace Fleeced
             if (s.act == Act.Graze)
             {
                 s.actTimer -= dt;
-                if (producesFood) s.status = Jobs.Get(Job.Grazer).statuses[(int)(simTime / 6 + s.id) % 4];
+                if (producesFood) s.status = Jobs.Get(Job.Grazer).statuses[(int)((long)(simClock / 6 + s.id) % 4)];
                 if (s.actTimer <= 0)
                 {
                     var t = TileAt(s.pos);
@@ -536,7 +556,7 @@ namespace Fleeced
             }
             else
             {
-                s.status = Jobs.Get(Job.Builder).statuses[(int)(simTime / 5 + s.id) % 5];
+                s.status = Jobs.Get(Job.Builder).statuses[(int)((long)(simClock / 5 + s.id) % 5)];
                 s.xp += dt * 0.35f;
                 if (s.xp >= s.XpToNext && s.level < 10) { s.xp = 0; s.level++; FloatText(s.pos + Vector2.up * 1.4f, "LEVEL UP!", new Color(1f, 0.86f, 0.35f)); }
                 if (rng.NextDouble() < dt * 0.002 * AccidentMult(s)) Accident(s, site);
@@ -574,7 +594,7 @@ namespace Fleeced
         {
             s.act = Act.Launched;
             s.launchFrom = s.pos;
-            s.launchTo = new Vector2(Random.Range(owned.xMin + 1f, owned.xMax - 1f), Random.Range(owned.yMin + 1f, owned.yMax - 1f));
+            s.launchTo = new Vector2(owned.xMin + 1f + (float)rng.NextDouble() * (owned.width - 2f), owned.yMin + 1f + (float)rng.NextDouble() * (owned.height - 2f));
             s.launchT = 0;
             s.launchDur = 1.6f + Vector2.Distance(s.launchFrom, s.launchTo) * 0.08f;
             Sfx.Play("boing");
@@ -603,6 +623,7 @@ namespace Fleeced
         public void Kill(Sheep s, string cause)
         {
             if (s.dead) return;
+            DisbandDrove(s); Ledger(-1); // its drove goes home without it
             s.dead = true;
             s.deathCause = cause;
             s.deathDay = Day;
@@ -610,24 +631,28 @@ namespace Fleeced
             s.actTimer = 0;
             RemoveFromJob(s);
             foreach (var b in buildings) { if (b.client == s) b.client = null; b.clients.Remove(s); if (b.inMachine == s) b.inMachine = null; }
-            deaths++;
+            deaths = Bump(deaths, 1);
             QueueRebirth(s);
-            graveyard.Add(new DeadRecord { name = s.name, cause = cause, level = s.level, day = Day, age = s.ageDays, traits = TraitList(s) });
+            if (!s.herdHand) graveyard.Add(new DeadRecord { name = s.name, cause = cause, level = s.level, day = Day, age = s.ageDays, traits = TraitList(s) }); // a herd hand was the herd's
             AddDecal("blood", s.pos);
             AddDecal("bones", s.pos + new Vector2(0.3f, -0.1f));
             SpawnParticles(s.pos + Vector2.up * 0.5f, new Color(0.7f, 0.08f, 0.08f), 14, 3.5f);
             SpawnParticles(s.pos + Vector2.up * 0.5f, new Color(0.95f, 0.93f, 0.88f), 10, 3f);
-            deathBanner = "NOOO, " + s.name.ToUpper() + " DIED";
-            deathCauseText = cause;
-            deathBannerT = 4.5f;
-            Sfx.Play("sad", 0.8f);
-            shake = Mathf.Max(shake, 0.6f);
-            bool yard = HasBuilding(BKind.Graveyard);
-            float days = yard ? 1f : 2.5f;
-            AddGlobalMod("Mourning " + s.name, yard ? -4 : -8, days);
-            Log("^r" + s.name + " died.^w " + cause);
-            if (started) AdviseNow("death", s.name + " is DEAD. " + cause + " A tragedy. Anyway. The line keeps moving.", LExpr.Shout, 1f);
-            AddTombstone();
+            if (s.herdHand) Log("^r" + s.name + "^w, one of the herd, died. " + cause);
+            else
+            {
+                deathBanner = "NOOO, " + s.name.ToUpper() + " DIED";
+                deathCauseText = cause;
+                deathBannerT = 4.5f;
+                Sfx.Play("sad", 0.8f);
+                shake = Mathf.Max(shake, 0.6f);
+                bool yard = HasBuilding(BKind.Graveyard);
+                float days = yard ? 1f : 2.5f;
+                AddGlobalMod("Mourning " + s.name, yard ? -4 : -8, days);
+                Log("^r" + s.name + " died.^w " + cause);
+                if (started) AdviseNow("death", s.name + " is DEAD. " + cause + " A tragedy. Anyway. The line keeps moving.", LExpr.Shout, 1f);
+                AddTombstone();
+            }
             if (selSheep == s) selSheep = null;
             if (followSheep == s) followSheep = null;
         }
@@ -675,9 +700,13 @@ namespace Fleeced
                 s.act = Act.GoWork;
                 return true;
             }
-            s.status = "Looking for a " + Jobs.Get(j).name + " job";
+            s.status = LookingForJob(j);
             return true;
         }
+
+        static readonly string[] lookingForJob = new string[Jobs.All.Length];
+        /// "Looking for a <job> job", built once per job (job names never change)
+        static string LookingForJob(Job j) { int k = (int)j; return lookingForJob[k] ?? (lookingForJob[k] = "Looking for a " + Jobs.Get(j).name + " job"); }
 
         public int FreeSlots(Job j)
         {
@@ -778,11 +807,11 @@ namespace Fleeced
             look.frame = moving ? ((int)(s.animT * 7) % 2) : 0;
 
             if (s.dead && s.act == Act.Ghost) look.ghost = true;
-            s.sr.sprite = SheepArt.Get(look);
+            SetSheepSprite(s, look);
             s.sr.flipX = !s.faceRight;
-            if (s.strain == Genetics.Glow && !s.dead && rng.NextDouble() < rdt * 1.2 && IsVisible(s.pos)) SpawnParticles(s.pos + Vector2.up * 0.6f, new Color(0.6f, 1f, 0.45f), 1, 0.8f);
-            if (s.strain == Genetics.Sparky && !s.dead && rng.NextDouble() < rdt * 1.5 && IsVisible(s.pos)) SpawnParticles(s.pos + Vector2.up * 0.7f, new Color(1f, 0.95f, 0.45f), 2, 1.6f);
-            if (s.strain == Genetics.Phoenix && !s.dead && rng.NextDouble() < rdt * 1.8 && IsVisible(s.pos)) SpawnParticles(s.pos + Vector2.up * 0.7f, new Color(1f, 0.55f, 0.15f), 1, 1.1f);
+            if (s.strain == Genetics.Glow && !s.dead && fxRng.NextDouble() < rdt * 1.2 && IsVisible(s.pos)) SpawnParticles(s.pos + Vector2.up * 0.6f, new Color(0.6f, 1f, 0.45f), 1, 0.8f);
+            if (s.strain == Genetics.Sparky && !s.dead && fxRng.NextDouble() < rdt * 1.5 && IsVisible(s.pos)) SpawnParticles(s.pos + Vector2.up * 0.7f, new Color(1f, 0.95f, 0.45f), 2, 1.6f);
+            if (s.strain == Genetics.Phoenix && !s.dead && fxRng.NextDouble() < rdt * 1.8 && IsVisible(s.pos)) SpawnParticles(s.pos + Vector2.up * 0.7f, new Color(1f, 0.55f, 0.15f), 1, 1.1f);
 
             float scale = (s.Lamb ? 0.62f : 1f) * (s.strain == Genetics.Jumbo ? 1.22f : s.strain == Genetics.Teacup ? 0.72f : 1f);
             Vector3 p = new Vector3(s.pos.x, s.pos.y, 0);
@@ -793,7 +822,7 @@ namespace Fleeced
             {
                 float freq = s.job == Job.Operator ? 14 : 8;
                 p.y += Mathf.Abs(Mathf.Sin(s.animT * freq + s.id)) * 0.07f;
-                if (s.workplace != null && s.workplace.def.kind == BKind.Wheel) { p.y += 0.15f; look.frame = (int)(s.animT * 12) % 2; s.sr.sprite = SheepArt.Get(look); }
+                if (s.workplace != null && s.workplace.def.kind == BKind.Wheel) { p.y += 0.15f; look.frame = (int)(s.animT * 12) % 2; SetSheepSprite(s, look); }
             }
             if (s.act == Act.Building) { p.y += Mathf.Abs(Mathf.Sin(s.animT * 10 + s.id)) * 0.1f; }
             if (s.act == Act.Graze) p.y -= 0.03f;
@@ -829,6 +858,7 @@ namespace Fleeced
             s.shadow.transform.position = new Vector3(s.pos.x, s.pos.y + 0.04f, 0);
             s.shadow.transform.localScale = new Vector3(scale * (s.flattened > 0 ? 1.3f : 1f), scale, 1);
             s.shadow.gameObject.SetActive(!s.dead || s.act == Act.Dying);
+            UpdateDroveTail(s);
 
             // ambient chatter
             if (!s.dead && started)
@@ -836,13 +866,23 @@ namespace Fleeced
                 s.baaTimer -= rdt * Speeds[Mathf.Max(1, speed)];
                 if (s.baaTimer <= 0)
                 {
-                    s.baaTimer = 10 + (float)rng.NextDouble() * 30;
+                    s.baaTimer = 10 + (float)fxRng.NextDouble() * 30;
                     string[] pool = s.mood < 30 ? SadChatter : (s.act == Act.Working && s.workplace != null && s.workplace.Danger > 0.008f ? WorkChatter : Chatter);
-                    SpeechText(s.pos + new Vector2(0.2f, 1.3f * scale), pool[rng.Next(pool.Length)]);
-                    if (rng.NextDouble() < 0.35 && IsVisible(s.pos)) Sfx.Baa(0.25f);
+                    SpeechText(s.pos + new Vector2(0.2f, 1.3f * scale), pool[fxRng.Next(pool.Length)]);
+                    if (fxRng.NextDouble() < 0.35 && IsVisible(s.pos)) Sfx.Baa(0.25f);
                 }
-                if (s.burned > 0 && rng.NextDouble() < rdt * 4) SpawnSmoke(s.pos + Vector2.up * 0.7f, 0.5f);
+                if (s.burned > 0 && fxRng.NextDouble() < rdt * 4) SpawnSmoke(s.pos + Vector2.up * 0.7f, 0.5f);
             }
+        }
+
+        /// shows the look on the sheep. s.lookCode remembers what is on screen, so an unchanged look costs no lookup and no sprite write.
+        /// Only this writes a sheep's sprite (SpawnSheepGO resets the code for a new renderer).
+        static void SetSheepSprite(Sheep s, SheepLook look)
+        {
+            long code = look.Pack();
+            if (code >= 0 && code == s.lookCode) return;
+            s.sr.sprite = SheepArt.Get(look);
+            s.lookCode = code;
         }
 
         public bool IsVisible(Vector2 p)

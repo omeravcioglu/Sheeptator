@@ -53,7 +53,7 @@ namespace Fleeced
             int n; int cost = UpgradeAllCost(tier, out n);
             if (n == 0) { Toast("^kEvery belt is already a " + BeltTierNames[tier] + "."); return; }
             if (res[0] < cost) { Toast("^rNeed " + cost + " coins to upgrade " + n + " belts."); return; }
-            res[0] -= cost;
+            SpendCoins(cost, CoinSrc.Upgrade);
             for (int x = owned.xMin; x < owned.xMax; x++)
                 for (int y = owned.yMin; y < owned.yMax; y++)
                 {
@@ -89,14 +89,14 @@ namespace Fleeced
             {
                 int c = BeltTierCost[want] - BeltTierCost[t.beltTier];
                 if (res[0] < c) { Toast("^rNot enough coins to upgrade that belt."); return false; }
-                res[0] -= c;
+                SpendCoins(c, CoinSrc.Upgrade);
             }
             if (t.belt < 0)
             {
                 if (!free)
                 {
                     if (res[0] < BeltTierCost[want]) { Toast("^rNot enough coins for belts."); return false; }
-                    res[0] -= BeltTierCost[want];
+                    SpendCoins(BeltTierCost[want], CoinSrc.Build);
                 }
                 if (beltRoot == null) { beltRoot = new GameObject("Belts"); beltRoot.transform.SetParent(worldRoot.transform); }
                 t.beltGo = new GameObject("belt");
@@ -120,7 +120,7 @@ namespace Fleeced
             if (t.beltGo != null) Destroy(t.beltGo);
             t.beltGo = null; t.beltSr = null;
             beltTiles--;
-            if (refund) res[0] += BeltTierCost[t.beltTier] / 2;
+            if (refund) CreditCoins(BeltTierCost[t.beltTier] / 2, CoinSrc.Refund);
             t.beltTier = 0;
             List<BeltItem> list;
             if (itemsByTile.TryGetValue(Key(x, y), out list))
@@ -148,7 +148,7 @@ namespace Fleeced
             }
             beltGhost.SetActive(!mouseOverUI && InMap(tx, ty));
             beltGhost.transform.position = new Vector3(tx, ty, 0);
-            beltGhostSr.sprite = clearTool ? EnvArt.Decal("scorch", 0) : BuildingArt.Belt(beltDir, beltFrame, beltTierSel);
+            beltGhostSr.sprite = clearTool ? EnvArt.Decal("scorch", 0) : BeltSprite(beltDir, beltFrame, beltTierSel);
             if (clearTool) beltGhost.transform.position = new Vector3(tx + 0.5f, ty + 0.5f, 0);
             bool okTile = InMap(tx, ty) && Owned(tx, ty) && tiles[tx, ty].building == null && tiles[tx, ty].pen == null;
             beltGhostSr.color = okTile ? new Color(1, 1, 1, 0.6f) : new Color(1, 0.3f, 0.3f, 0.5f);
@@ -289,11 +289,11 @@ namespace Fleeced
             {
                 case BKind.Market:
                     {
-                        float earned = SellPrice(it.res) * it.amount * 1.1f;
-                        res[0] += earned; totalMade[0] += earned; totalSold[(int)it.res] += it.amount;
+                        float earned = SellPrice(it.res, b) * it.amount * 1.1f; // this Market's level, not the first one's
+                        CreditCoins(earned, CoinSrc.BeltSale); totalMade[0] += earned; totalSold[(int)it.res] += it.amount;
                         marketBeltSales++; beltCoins += earned;
                         priceMod[(int)it.res] = Mathf.Max(0.35f, priceMod[(int)it.res] * (1f - 0.002f * it.amount / Mathf.Max(1, (int)it.res)));
-                        if (rng.NextDouble() < 0.3 && IsVisible(b.Center)) FloatText(b.Center + Vector2.up, "+" + Mathf.RoundToInt(earned) + "c", new Color(1f, 0.86f, 0.35f));
+                        if (fxRng.NextDouble() < 0.3 && IsVisible(b.Center)) FloatText(b.Center + Vector2.up, "+" + Mathf.RoundToInt(earned) + "c", new Color(1f, 0.86f, 0.35f));
                         return true;
                     }
                 case BKind.Storage:
@@ -364,7 +364,7 @@ namespace Fleeced
                         for (int y = owned.yMin; y < owned.yMax; y++)
                         {
                             var t = tiles[x, y];
-                            if (t.belt >= 0 && t.beltSr != null) t.beltSr.sprite = BuildingArt.Belt(t.belt, beltFrame, t.beltTier);
+                            if (t.belt >= 0 && t.beltSr != null) t.beltSr.sprite = BeltSprite(t.belt, beltFrame, t.beltTier);
                         }
                 }
             }
@@ -376,6 +376,18 @@ namespace Fleeced
                 it.go.transform.position = new Vector3(p.x, p.y - 0.15f, 0);
             }
             if (beltGhost != null && !beltTool) beltGhost.SetActive(false);
+        }
+
+        /// BuildingArt.Belt, kept per direction, frame and tier: the animation re-fetches every belt tile's sprite on each belt frame,
+        /// and BuildingArt builds a name string for every lookup. Same sprites (it clamps the tier the same way).
+        readonly Sprite[] beltSprites = new Sprite[4 * 4 * 3];
+        Sprite BeltSprite(int dir, int frame, int tier)
+        {
+            if (dir < 0 || dir > 3 || frame < 0 || frame > 3) return BuildingArt.Belt(dir, frame, tier);
+            int i = (dir * 4 + frame) * 3 + Mathf.Clamp(tier, 0, 2);
+            var spr = beltSprites[i];
+            if (ReferenceEquals(spr, null)) beltSprites[i] = spr = BuildingArt.Belt(dir, frame, tier);
+            return spr;
         }
 
         // ---------------- sheep on belts ----------------
@@ -428,7 +440,7 @@ namespace Fleeced
                     if ((IsSheepMachine(b) || b.def.kind == BKind.Market) && (!b.Built || b.damaged))
                     {
                         b.refuseWaitT += dt;
-                        HoldOnBelt(s, dt, "Waiting: the " + b.def.name + (b.damaged ? " is broken" : " is being built"));
+                        HoldOnBelt(s, dt, KindText(b.damaged ? KindBroken : KindBeingBuilt, b.def));
                         return true;
                     }
                     if (b.def.kind == BKind.Market)
@@ -441,24 +453,24 @@ namespace Fleeced
                     {
                         if (!MachineDoorOpen(b, EntrySide(d)))
                         {
-                            s.status = "Waiting: the " + b.def.name + "'s door is SHUT";
+                            s.status = KindText(KindDoorShut, b.def);
                             b.doorWaitT += dt;
                             s.ridingT = Mathf.Max(0, s.ridingT - dt);
                             return true;
                         }
                         if (b.inMachine == null) { EnterMachine(s, b, d); return true; }
-                        s.status = "Queueing for the " + b.def.name;
+                        s.status = KindText(KindQueueFor, b.def);
                         return true;
                     }
                     // anything else takes no sheep: they wait at its wall (contained) and the Supreme Leader complains
                     b.refuseWaitT += dt;
-                    HoldOnBelt(s, dt, "Waiting: the " + b.def.name + " does not take sheep");
+                    HoldOnBelt(s, dt, KindText(KindNoSheep, b.def));
                     return true;
                 }
                 if (nt.pen != null && nt.belt < 0)
                 {
                     var room = nt.pen;
-                    if (room.penCount >= RoomCapacity(room)) { s.status = "Waiting: the " + room.def.name + " is FULL"; s.ridingT = Mathf.Max(0, s.ridingT - dt); return true; }
+                    if (Inside(room) >= RoomCapacity(room)) { s.status = KindText(KindFull, room.def); s.ridingT = Mathf.Max(0, s.ridingT - dt); return true; }
                     DropIntoPen(s, room, s.pos + (Vector2)d * 0.9f);
                     return true;
                 }

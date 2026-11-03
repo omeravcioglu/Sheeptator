@@ -31,6 +31,7 @@ namespace Fleeced
         public Job job = Job.Grazer;
         public Building workplace;
         public string status = "Grazing";
+        public long lookCode = -1;   // the packed look of the sprite on screen (Art/SheepArt.cs); -1 = none yet
         public float ageDays = 5;
         public int generation = 1;
         public string parents = "Unknown";
@@ -67,6 +68,9 @@ namespace Fleeced
         public GameObject go;
         public SpriteRenderer sr;
         public SpriteRenderer shadow;
+        public Drove drove;          // herd sheep following it out of a room (Core/Herd.cs), null = none
+        public bool herdHand;        // stepped out of a herd to lead it: no history, and it melts back in when not needed
+        public SpriteRenderer tail;  // its drove on screen (made the first time it leads one)
 
         public bool Has(string t) { return traits.Contains(t); }
         public bool Lamb { get { return ageDays < LambAge; } }
@@ -129,9 +133,18 @@ namespace Fleeced
         public int[] doorFilter = new int[4];
         public int[] doorPicks = new int[4];
         public float[] doorCd = new float[4];
+        public Sheep[] nearHint = new Sheep[4]; // per door: the last sheep found blocking it, checked first (SheepNear)
         public int penCount, penReady, penOut, penMembers, penHungry, penFed;
         public float breedProgress;
         public GameObject fenceRoot;
+        // rooms: the counted sheep living here beyond the named ones (Core/Herd.cs), null until one forms
+        public Flock herd;
+        public SpriteRenderer herdSr;   // the herd on screen
+        public float promoteCd;         // seconds until another of the herd can step out to lead it
+        public int leaderMask;          // kinds (strain x 2 + ram) a named sheep inside could lead out now (counted every step)
+        public Sheep spareHand;         // a herd hand inside with nothing to do (counted every step)
+        public double herdStarved, herdEaten;             // the herd's deaths today (starved, eaten by Wolfsheep), for the evening's log
+        public double herdShow; public float herdShowT;    // lambs born since the last "+N LAMBS" on screen, and the time to the next
         // conveyor machines (shearing / milking / wool plant / slaughterhouse): a door on every side a belt touches,
         // using doorOpen/doorFilter/doorPicks above. Until the player clicks a door it follows the belts (doorTouched).
         public bool[] doorTouched = new bool[4];

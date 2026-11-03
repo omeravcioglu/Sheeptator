@@ -5,6 +5,18 @@ namespace Fleeced
 {
     public static class Boot
     {
+        /// Text never follows the PC's language settings: no decimal commas, and no Turkish dotted capital I, which the
+        /// pixel font can't draw. Runs before any scene loads, so before anything formats a number or upper-cases a name.
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        public static void InvariantText()
+        {
+            var ci = System.Globalization.CultureInfo.InvariantCulture;
+            System.Globalization.CultureInfo.DefaultThreadCurrentCulture = ci;
+            System.Globalization.CultureInfo.DefaultThreadCurrentUICulture = ci;
+            System.Threading.Thread.CurrentThread.CurrentCulture = ci;
+            System.Threading.Thread.CurrentThread.CurrentUICulture = ci;
+        }
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         static void Init()
         {
@@ -17,16 +29,26 @@ namespace Fleeced
     {
         public const string Title = "SHEEPTATOR";
         public const string Subtitle = "A Sheep Management Tragedy";
+        /// shown on the title next to FESTIVAL BUILD
+        public const string Version = "1.0.0";
+        /// the title screen's bottom-right label
+        public static string TitleFooter { get { return "FESTIVAL BUILD  v" + Version; } }
         public static Game I;
 
         public const float DayLength = 24f;
         public const int DaysPerSeason = 10;
         public static readonly string[] Seasons = { "Spring", "Summer", "Autumn", "Winter" };
 
-        public System.Random rng = new System.Random();
-        public float simTime;
+        public System.Random rng = new System.Random(WorldSeed());
+        /// particles, chatter and sounds draw from their own generator, so what the camera shows (or the frame rate)
+        /// never changes what happens in the simulation
+        public System.Random fxRng = new System.Random();
+        /// the game clock in seconds. A double: a float clock stops taking small steps after a day or two of play.
+        public double simClock;
+        /// the clock as a float, for code written against the old float field (the Steam store harness reads and sets it)
+        public float simTime { get { return (float)simClock; } set { simClock = value; } }
         public int dayIndex;
-        public float Day { get { return simTime / DayLength; } }
+        public float Day { get { return (float)(simClock / DayLength); } }
         public int Season { get { return (dayIndex / DaysPerSeason) % 4; } }
         public int Year { get { return dayIndex / (DaysPerSeason * 4) + 1; } }
         public int DayOfSeason { get { return dayIndex % DaysPerSeason + 1; } }
@@ -67,10 +89,13 @@ namespace Fleeced
         void Awake()
         {
             I = this;
+            worldsCreated++;
             useGUILayout = false;
             Application.targetFrameRate = 60;
             PixelFont.Init();
+            Num.Scientific = PlayerPrefs.GetInt("numbers", 0) == 1;
             Sfx.Init(gameObject);
+            if (!bootChecked) { bootChecked = true; runStartUtc = System.DateTime.UtcNow; FinishInterruptedSave(); }
             SetupCamera();
             InitWorld();
             if (!TryApplyPendingLoad()) NewGame();
@@ -95,18 +120,30 @@ namespace Fleeced
             pixelScale = Mathf.Clamp(Mathf.RoundToInt(Screen.height / 220f), 2, 8);
         }
 
+        const int MaxSubsteps = 4;
+        const float MaxSimDebt = 0.25f;
+        float simDebt; // game time owed to the simulation, carried from a slow frame
+        public int lastSubsteps; // simulation steps in the last frame (the stress suite reads it)
+
         void Update()
         {
+            if (inert) { RestartWorld(); return; } // a load failed half-way: start over with the .bak or a new game
             float rdt = Mathf.Min(Time.unscaledDeltaTime, 0.1f);
             UpdateUIScale();
             HandleInput(rdt);
             UpdateLeader(rdt);
             UpdateFliers(rdt);
+            UpdateGateVisual(rdt);
             bool paused = !started || currentEvent != null || speed == 0 || launchSeq > 0 || LeaderModal;
-            float dt = paused ? 0f : rdt * Speeds[speed];
-            // substep for stability at 4x
-            int steps = Mathf.CeilToInt(dt / 0.05f);
-            for (int i = 0; i < steps; i++) Simulate(dt / steps);
+            // substeps of at most 0.05 s, and at most MaxSubsteps a frame: time beyond that waits for the next frame (at most
+            // MaxSimDebt), so a slow frame never makes the next one slower. At normal frame rates this is exactly dt in ceil(dt/0.05) steps.
+            simDebt = paused ? 0f : Mathf.Min(simDebt + rdt * Speeds[speed], MaxSimDebt);
+            int steps = Mathf.Min(MaxSubsteps, Mathf.CeilToInt(simDebt / 0.05f));
+            float step = steps > 0 ? Mathf.Min(0.05f, simDebt / steps) : 0f;
+            for (int i = 0; i < steps; i++) Simulate(step);
+            float dt = step * steps;
+            lastSubsteps = steps;
+            simDebt = steps > 0 ? Mathf.Max(0f, simDebt - dt) : simDebt;
             SimLaunch(rdt);
             UpdateVisuals(rdt, dt);
             UpdateFx(rdt, dt);
@@ -117,8 +154,8 @@ namespace Fleeced
         void Simulate(float dt)
         {
             if (dt <= 0) return;
-            simTime += dt;
-            int di = Mathf.FloorToInt(Day);
+            simClock += dt;
+            int di = (int)System.Math.Floor(simClock / DayLength);
             while (dayIndex < di) { dayIndex++; OnNewDay(); }
 
             UpdateGrass(dt);
@@ -127,12 +164,18 @@ namespace Fleeced
             ProcessRebirths();
             for (int i = sheep.Count - 1; i >= 0; i--) SimSheep(sheep[i], dt);
             for (int i = buildings.Count - 1; i >= 0; i--) SimBuilding(buildings[i], dt);
+            SimHerds(dt);
+            SimGate(dt);
             SimBelts(dt);
             SimWolves(dt);
             SimEvents(dt);
             ClampStorage();
             UpdateRates(dt);
             CheckObjectives();
+            CheckCoinTier();
+#if FLEECED_DEV
+            DevCheckFlock();
+#endif
         }
 
         void UpdateRates(float dt)
@@ -157,7 +200,17 @@ namespace Fleeced
             return n == 0 ? 0 : m / n;
         }
 
-        public int Population { get { int n = 0; foreach (var s in sheep) if (!s.dead) n++; return n; } }
+        /// every sheep: the named ones, the droves they lead and every room's herd (a double: a herd holds millions)
+        public double Population
+        {
+            get
+            {
+                double n = 0;
+                foreach (var s in sheep) if (!s.dead) { n++; if (s.drove != null) n += s.drove.n; }
+                foreach (var b in buildings) if (b.herd != null) n += b.herd.Total;
+                return n;
+            }
+        }
 
         public int NextId() { return nextId++; }
 
@@ -172,13 +225,16 @@ namespace Fleeced
                     if (Input.GetKeyDown(KeyCode.Escape) || Input.GetKeyDown(KeyCode.H) || Input.GetKeyDown(KeyCode.F1) || Input.GetKeyDown(KeyCode.Return)) showHelp = false;
                     return;
                 }
+                DisarmGate();
                 if (Input.GetKeyDown(KeyCode.H) || Input.GetKeyDown(KeyCode.F1)) { showHelp = true; return; }
-                if (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.Space)) { if (HasSave && SaveVersion() >= 4) LoadGame(); else StartGame(); }
+                if (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter)) TitleEnter();
                 return;
             }
-            if (currentEvent != null || launchSeq > 0 || LeaderModal) return;
+            if (currentEvent != null || launchSeq > 0 || LeaderModal) { DisarmGate(); return; }
 
-            if (Input.GetKeyDown(KeyCode.Space)) { if (speed == 0) speed = prevSpeed; else { prevSpeed = speed; speed = 0; } }
+            if (Input.GetKeyDown(KeyCode.P) || Input.GetKeyDown(KeyCode.Pause)) { if (speed == 0) speed = prevSpeed; else { prevSpeed = speed; speed = 0; } }
+            UpdateGateKey(); // SPACE: hold to let lambs out of the Sheep Gate
+            if (Input.GetKeyDown(KeyCode.U) && UiOn("upgrades")) TogglePanel(Panel.Upgrades);
             if (Input.GetKeyDown(KeyCode.Alpha1)) speed = 1;
             if (Input.GetKeyDown(KeyCode.Alpha2)) speed = 2;
             if (Input.GetKeyDown(KeyCode.Alpha3)) speed = 3;
@@ -332,8 +388,27 @@ namespace Fleeced
         public void StartGame()
         {
             started = true;
+            titleNotice = null;
             Sfx.Baa(0.8f);
             if (!tutDone && tutStep < 0) BeginTutorial();
+        }
+
+        /// Enter or Space on the title presses its first button: CONTINUE a current save, otherwise BEGIN a new game
+        /// (an old or damaged save is archived first). A newer version's save is never continued or replaced by a key.
+        void TitleEnter()
+        {
+            CheckTitleSave();
+            if (titleSaveNewer) { titleNotice = NewerSaveNotice; return; }
+            if (titleHasSave && !titleSaveOld) LoadGame(); else StartGame();
+        }
+
+        /// a fresh seed for each world; test builds can pin it (DevHooks.Seed) to make a run reproducible
+        static int WorldSeed()
+        {
+#if FLEECED_DEV
+            if (DevHooks.Seed.HasValue) return DevHooks.Seed.Value;
+#endif
+            return System.Environment.TickCount;
         }
 
         // Sorting helpers

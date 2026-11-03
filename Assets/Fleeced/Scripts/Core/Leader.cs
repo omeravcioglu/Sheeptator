@@ -66,7 +66,7 @@ namespace Fleeced
         // when each UI element becomes available during the tutorial
         static readonly Dictionary<string, int> UnlockAt = new Dictionary<string, int>
         {
-            { "flock", 2 }, { "build", 2 }, { "belts", 2 }, { "gate", 3 }, { "jobs", 7 }, { "market", 10 }, { "research", 15 }, { "map", 16 },
+            { "flock", 2 }, { "build", 2 }, { "belts", 2 }, { "gate", 3 }, { "jobs", 7 }, { "market", 10 }, { "research", 15 }, { "map", 16 }, { "upgrades", 99 },
         };
         static readonly Dictionary<BKind, int> BuildAt = new Dictionary<BKind, int>
         {
@@ -152,6 +152,9 @@ namespace Fleeced
 
         void UpdateLeader(float rdt)
         {
+            // a save whose tutorial was done before the Sheep Gate existed gets it (and its introduction) once
+            if (started && tutDone && !LeaderModal && currentEvent == null && launchSeq == 0 && !flags.Contains("gate_intro")) GateIntro();
+            PayOfflineAward();
             if (leaderWaveT > 0) leaderWaveT -= rdt;
             if (LeaderModal)
             {
@@ -171,6 +174,7 @@ namespace Fleeced
             }
             if (popT > 0) popT -= rdt;
             if (!started || currentEvent != null || launchSeq > 0) return;
+            SayWaiting();
             UpdateTutorial();
             adviceCheckT -= rdt;
             if (adviceCheckT <= 0) { adviceCheckT = 1.5f; CheckAdvice(); }
@@ -245,6 +249,14 @@ namespace Fleeced
             blueprints.Clear();
             // decrees already fulfilled during the tutorial are skipped silently
             while (CurrentObjective != null && CurrentObjective.done(this)) objectiveIndex++;
+            // the gate and upgrade decrees come first now: decrees after them that are already done are marked to be skipped later
+            for (int i = objectiveIndex; i < Objectives.Length; i++)
+            {
+                var oi = Objectives[i];
+                if (oi.done(this)) { if (i > objectiveIndex) flags.Add("skip_" + oi.id); }
+                else if (oi.id != "gate5" && oi.id != "upgrade1") break;
+            }
+            GateIntro(); // before the FIRST DECREE bubble, which then waits until the gate's dialogue closes
             var o = CurrentObjective;
             if (o != null) LeaderPop("FIRST DECREE: " + (o.say ?? o.text), LExpr.Shout);
         }
@@ -292,7 +304,7 @@ namespace Fleeced
             if (res[0] < amount)
             {
                 double gift = amount - res[0] + 10;
-                res[0] += gift;
+                CreditCoins(gift, CoinSrc.Tutorial);
                 Toast("^yThe Supreme Treasury printed " + Mathf.RoundToInt((float)gift) + " coins.");
             }
         }
@@ -791,6 +803,33 @@ namespace Fleeced
             });
         }
 
+        // ---------------- announcements that wait their turn ----------------
+        /// A coin evolution or a new settlement tier is announced once the Supreme Leader has finished his line and the last toast
+        /// is gone, so it never cuts off a "Decree fulfilled! NEXT: ..." bubble or the offline award. A newer one of the same kind
+        /// replaces one still waiting. Each world is a new Game, so nothing waits across a load.
+        readonly List<string> waitKeys = new List<string>();
+        readonly List<System.Action> waitSays = new List<System.Action>();
+        void AnnounceWhenFree(string key, System.Action say)
+        {
+            int i = waitKeys.IndexOf(key);
+            if (i >= 0) { waitSays[i] = say; return; }
+            waitKeys.Add(key); waitSays.Add(say);
+        }
+        bool IsWaiting(string key) { return waitKeys.Contains(key); }
+        void DropWaiting(string key)
+        {
+            int i = waitKeys.IndexOf(key);
+            if (i >= 0) { waitKeys.RemoveAt(i); waitSays.RemoveAt(i); }
+        }
+        void SayWaiting()
+        {
+            // an event card about to come up (a result card is queued for the next step) would cover it
+            if (waitKeys.Count == 0 || popT > 0.5f || LeaderModal || toastT > 0 || eventQueue.Count > 0) return;
+            var say = waitSays[0];
+            waitKeys.RemoveAt(0); waitSays.RemoveAt(0);
+            say();
+        }
+
         // ---------------- reactive shouting ----------------
         bool AdviceReady(string key) { float t; return !adviceNext.TryGetValue(key, out t) || Day >= t; }
         void Advise(string key, string text, LExpr e, float cooldownDays)
@@ -811,13 +850,15 @@ namespace Fleeced
             float traffic = trafficT; trafficT *= 0.5f;
             if (popT > 0.5f) return;
             bool afterFood = tutDone || tutStep >= 8;
-            int pop = Population;
+            double pop = Population;
             float perDay = 0; int starving = 0;
-            foreach (var s in sheep) if (!s.dead && s.act != Act.Hidden) { perDay += 4f * FoodMult(s); if (s.hunger > 2f) starving++; }
+            foreach (var s in sheep) if (!s.dead && s.act != Act.Hidden) { perDay += 4f * FoodMult(s); if (s.hunger > 2f && !s.herdHand) starving++; } // a herd hand is the herd's hunger
+            // herds eat from the store only in a Feeding Lot; the food check below also never asks for more than the store can hold
+            foreach (var b in buildings) { var h = b.herd; if (h != null && h.Adults >= 1 && IsLot(b)) perDay += (float)(4.0 * HerdFoodMult(h) * h.Adults); }
             if (afterFood)
             {
                 if (starving > 0) { Advise("starving", "Someone is STARVING. Open the door to the FEEDING LOT, and keep FOOD in the store: Farms, or hay from the Market.", LExpr.Shout, 1.5f); return; }
-                if (perDay > 0 && res[(int)Res.Food] < perDay * 0.6f && rate[(int)Res.Food] <= 0.01f) { Advise("food", "The food store is almost EMPTY! The Feeding Lot cannot feed them air. Build or upgrade FARMS.", LExpr.Shout, 1.5f); return; }
+                if (perDay > 0 && res[(int)Res.Food] < Mathf.Min(perDay * 0.6f, CapOf(Res.Food) * 0.25f) && rate[(int)Res.Food] <= 0.01f) { Advise("food", "The food store is almost EMPTY! The Feeding Lot cannot feed them air. Build or upgrade FARMS.", LExpr.Shout, 1.5f); return; }
                 if (pop > popCap) { Advise("homeless", "The pens are OVERCROWDED. Upgrade a BREEDING PEN or build another. Or thin the flock: the Slaughterhouse, or sell them alive at a Market.", LExpr.Stern, 2f); return; }
             }
             if (!tutDone) return;
@@ -830,13 +871,13 @@ namespace Fleeced
                 if (IsPen(b))
                 {
                     anyPen = b;
-                    if (b.penHungry >= Mathf.Max(3, b.penCount / 2) && !AnyDoorUsable(b)) { Advise("hungry_" + b.id, "Half the pen is HUNGRY. Open the door that leads to the FEEDING LOT.", LExpr.Shout, 1f); return; }
-                    if (b.penMembers > cap) { Advise("crowd_" + b.id, "The pen is OVERCROWDED. Upgrade it, build another one, or... the Slaughterhouse has a door too.", LExpr.Smug, 2f); return; }
+                    if (b.penHungry >= Mathf.Max(3, (int)System.Math.Min(int.MaxValue, Inside(b) / 2)) && !AnyDoorUsable(b)) { Advise("hungry_" + b.id, "Half the pen is HUNGRY. Open the door that leads to the FEEDING LOT.", LExpr.Shout, 1f); return; }
+                    if (Members(b) > cap) { Advise("crowd_" + b.id, "The pen is OVERCROWDED. Upgrade it, build another one, or... the Slaughterhouse has a door too.", LExpr.Smug, 2f); return; }
                 }
                 else
                 {
-                    if (b.penCount >= cap && b.penHungry > 0) { Advise("lotfull_" + b.id, "The Feeding Lot is FULL and sheep are queueing on the belt. UPGRADE it, or build a second one.", LExpr.Stern, 2f); return; }
-                    if (b.penCount >= cap && !AnyDoorUsable(b)) { Advise("lotshut_" + b.id, "The Feeding Lot is full of FED sheep and every door is closed. Open a door so they move on.", LExpr.Shout, 1f); return; }
+                    if (Inside(b) >= cap && b.penHungry > 0) { Advise("lotfull_" + b.id, "The Feeding Lot is FULL and sheep are queueing on the belt. UPGRADE it, or build a second one.", LExpr.Stern, 2f); return; }
+                    if (Inside(b) >= cap && !AnyDoorUsable(b)) { Advise("lotshut_" + b.id, "The Feeding Lot is full of FED sheep and every door is closed. Open a door so they move on.", LExpr.Shout, 1f); return; }
                 }
             }
             if (machineDoorNews)
@@ -875,6 +916,7 @@ namespace Fleeced
                 if (pop >= 4 && pop < popCap && Mathf.Min(rams, ewes) * 2 < Mathf.Max(rams, ewes))
                 { Advise("couples", "Only " + Mathf.Min(rams, ewes) + " breeding couples. Too many " + (rams > ewes ? "RAMS" : "EWES") + "! Lambs need both. Send the extras to the Slaughterhouse, not the ones we need.", LExpr.Stern, 3f); return; }
             }
+            if (HerdAdvice()) return;
             if (anyPen == null && pop > 0) { Advise("nopen", "My sheep are roaming FREE. Free sheep think free thoughts. Build a BREEDING PEN and connect its doors with conveyors.", LExpr.Shout, 2f); return; }
             if (traffic > 30f) { Advise("traffic", "SHEEP TRAFFIC! The belts are jammed. Research STEEL BELTS and UPGRADE ALL BELTS, add machines, or build a second line.", LExpr.Shout, 2f); return; }
             foreach (var b in buildings)
@@ -890,6 +932,7 @@ namespace Fleeced
             int fluffy = 0, full = 0; bool penShut = true;
             foreach (var b in buildings) if (IsPen(b) && AnyDoorUsable(b)) penShut = false;
             foreach (var s in sheep) { if (s.dead || s.Lamb || s.job != Job.Grazer) continue; if (s.wool >= 0.98f) fluffy++; if (!s.male && s.milk >= 0.98f) full++; }
+            foreach (var b in buildings) { var h = b.herd; if (h == null) continue; if (h.wool >= 0.98f) fluffy = Bump(fluffy, h.Adults); if (h.milk >= 0.98f) full = Bump(full, h.Ewes); }
             if (fluffy >= 5 && penShut && lineShears) { Advise("fluff", "Look at all that FLUFF standing around in the pen. OPEN THE DOOR. My machines are hungry too.", LExpr.Shout, 2f); return; }
             if (full >= 4 && !lineMilks) { Advise("udders", "The ewes are about to BURST. Build a MILKING MACHINE on the conveyor!", LExpr.Shout, 2f); return; }
             if (res[0] > 1500 + dayIndex * 40) { Advise("rich", "We are RICH. Money in a pile is lazy money. Upgrade the rooms. Upgrade the belts. Build something terrible.", LExpr.Smug, 4f); return; }
@@ -943,6 +986,7 @@ namespace Fleeced
             if (avail < 170) return;
             var st = CurStep;
             string head, text, prog = null, reward = null, side;
+            float ratio = -1;
             if (st != null)
             {
                 head = "SUPREME DECREE";
@@ -955,12 +999,16 @@ namespace Fleeced
                 var o = CurrentObjective;
                 head = o != null ? "DECREE #" + (objectiveIndex + 1) : "NO DECREES";
                 text = o == null ? "^gAll decrees fulfilled. Rule as you see fit." : o.text;
-                prog = o != null && o.progress != null ? o.progress(this) : null;
-                reward = o != null && o.reward > 0 ? "+" + o.reward : null;
+                if (o != null && o.have != null && o.need > 0)
+                {
+                    double hv = System.Math.Min(System.Math.Floor(o.have(this)), o.need);
+                    prog = Num.Fmt(hv) + "/" + Num.Fmt(o.need);
+                    ratio = Mathf.Clamp01((float)(hv / o.need));
+                }
+                reward = o != null && o.reward > 0 ? "+" + Num.Fmt(o.reward) : null;
                 side = TierName().ToUpper();
             }
-            float ratio = -1;
-            if (prog != null)
+            if (prog != null && ratio < 0)
             {
                 int slash = prog.IndexOf('/');
                 float a, b;

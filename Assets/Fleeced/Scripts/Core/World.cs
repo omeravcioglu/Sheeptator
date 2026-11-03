@@ -165,11 +165,11 @@ namespace Fleeced
             if (any) groundTex.Apply(false, false);
         }
 
+        static readonly float[] SeasonGrassMult = { 1.25f, 1f, 0.65f, 0.3f }; // allocated once, not every step
         void UpdateGrass(float dt)
         {
             float regrow = dt / DayLength * 0.16f * (tech.Contains("better_grass") ? 1.6f : 1f) * (flags.Contains("premium_seeds") ? 1.4f : 1f);
-            float[] seasonMult = { 1.25f, 1f, 0.65f, 0.3f };
-            regrow *= seasonMult[Season];
+            regrow *= SeasonGrassMult[Season];
             float wearDecay = dt / DayLength * 0.12f;
             for (int x = owned.xMin; x < owned.xMax; x++)
                 for (int y = owned.yMin; y < owned.yMax; y++)
@@ -316,7 +316,7 @@ namespace Fleeced
             if (landLevel >= LandCost.Length) return false;
             int cost = LandCost[landLevel];
             if (res[(int)Res.Coins] < cost) return false;
-            res[(int)Res.Coins] -= cost;
+            SpendCoins(cost, CoinSrc.Purchase);
             landLevel++;
             int nx = Mathf.Max(1, owned.xMin - 3), ny = Mathf.Max(1, owned.yMin - 3);
             int nxMax = Mathf.Min(MapW - 1, owned.xMax + 3), nyMax = Mathf.Min(MapH - 1, owned.yMax + 3);
@@ -378,6 +378,7 @@ namespace Fleeced
                 }
             if (inPen != null)
                 for (int x = tx; x < tx + d.w; x++) for (int y = ty; y < ty + d.h; y++) if (tiles[x, y].pen != inPen) return false;
+            if (d.kind == BKind.SheepGate && GatePenAt(tx, ty) == null) return false; // against a Breeding Pen's fence
             return true;
         }
 
@@ -391,7 +392,7 @@ namespace Fleeced
                     int tx = Mathf.FloorToInt(m.x), ty = Mathf.FloorToInt(m.y);
                     if (Owned(tx, ty) && !tiles[tx, ty].path && tiles[tx, ty].building == null && tiles[tx, ty].pen == null && res[0] >= 2)
                     {
-                        tiles[tx, ty].path = true; res[0] -= 2;
+                        tiles[tx, ty].path = true; SpendCoins(2, CoinSrc.Build);
                         Sfx.Play("click", 0.4f);
                         PaintTile(tx, ty); tiles[tx, ty].sig = TileSig(tx, ty); groundTex.Apply(false, false);
                     }
@@ -423,7 +424,8 @@ namespace Fleeced
                     Sfx.Play("click", 0.5f, 0.6f);
                     if (!afford) Toast("^rNot enough coins.");
                     else if (UniqueBlocked(d)) Toast("^rYou can only have one " + d.name + ".");
-                    else Toast(IsRoomKind(d.kind) ? "^rIt needs free grass: no buildings, belts or other pens." : "^rCan't build there. Needs free owned land outside pens.");
+                    else Toast(d.kind == BKind.SheepGate ? "^rThe Sheep Gate stands against a Breeding Pen's top, left or right fence, not on a door."
+                        : IsRoomKind(d.kind) ? "^rIt needs free grass: no buildings, belts or other pens." : "^rCan't build there. Needs free owned land outside pens.");
                 }
             }
         }

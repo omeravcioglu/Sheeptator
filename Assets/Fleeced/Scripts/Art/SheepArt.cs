@@ -20,6 +20,16 @@ namespace Fleeced
             return woolStage + "_" + woolCol + "_" + faceCol + "_" + (int)expr + "_" + (int)variant + "_" + frame + "_" +
                    (bandage ? 1 : 0) + (mud ? 1 : 0) + (burned ? 1 : 0) + (blood ? 1 : 0) + (ghost ? 1 : 0) + (clone ? 1 : 0) + (udder ? 1 : 0) + "_" + strain;
         }
+
+        /// the same fields as Key(), one byte each and the seven flags in the top byte, so two looks share a code exactly
+        /// when they share a key. -1 when a field is outside 0..255: that look only has the string key.
+        public long Pack()
+        {
+            int e = (int)expr, v = (int)variant;
+            if (((woolStage | woolCol | faceCol | e | v | frame | strain) & ~0xFF) != 0) return -1;
+            int flags = (bandage ? 1 : 0) | (mud ? 2 : 0) | (burned ? 4 : 0) | (blood ? 8 : 0) | (ghost ? 16 : 0) | (clone ? 32 : 0) | (udder ? 64 : 0);
+            return (long)woolStage | (long)woolCol << 8 | (long)faceCol << 16 | (long)e << 24 | (long)v << 32 | (long)frame << 40 | (long)strain << 48 | (long)flags << 56;
+        }
     }
 
     public static class SheepArt
@@ -29,15 +39,23 @@ namespace Fleeced
         public static readonly string[] FaceHex = { "2c2626", "5c4232", "e2d2c2", "6c6262" };
         /// fleece colour of each DNA strain (index = Genetics id): silk pearl, cream, jumbo, gold, glow
         static readonly string[] StrainWool = { "", "f6dcef", "fbf4e4", "e6d4b4", "f0c040", "a8f070", "f4f0ec", "fff2e6", "f8b8e0", "8a5a3a", "8c8c96", "f8e060", "c8b4f0", "f07838" };
+        /// a strain's fleece colour (hex), or null for plain sheep and unknown strains (the herd's floor and droves, Art/HerdArt.cs)
+        public static string StrainWoolHex(int strain) { return strain > 0 && strain < StrainWool.Length ? StrainWool[strain] : null; }
         static readonly Dictionary<string, Sprite> cache = new Dictionary<string, Sprite>();
+        static readonly Dictionary<long, Sprite> fast = new Dictionary<long, Sprite>(); // the same sprites by Pack(): a hit builds no key string
 
         public static Sprite Get(SheepLook l)
         {
-            string k = l.Key();
+            long p = l.Pack();
             Sprite s;
-            if (cache.TryGetValue(k, out s)) return s;
-            s = Build(l).ToSprite(new Vector2(0.5f, 0f));
-            cache[k] = s;
+            if (p >= 0 && fast.TryGetValue(p, out s)) return s;
+            string k = l.Key();
+            if (!cache.TryGetValue(k, out s))
+            {
+                s = Build(l).ToSprite(new Vector2(0.5f, 0f));
+                cache[k] = s;
+            }
+            if (p >= 0) fast[p] = s;
             return s;
         }
 

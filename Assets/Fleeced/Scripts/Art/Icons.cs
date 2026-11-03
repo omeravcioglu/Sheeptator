@@ -77,6 +77,7 @@ namespace Fleeced
             { "dna", "kk...kk.|kBk.kgk.|.kBkgk..|..kgk...|.kgkBk..|kgk.kBk.|kk...kk.|........" },
             { "chocomilk", "..kkkk..|..kllk..|..kwwk..|.kwwwwk.|kwwwwwwk|kwddddwk|kwwwwwwk|.kkkkkk." },
             { "cottoncandy", "..kkkk..|.kppppk.|kppwpppk|kpppppPk|.kppppk.|..kkbk..|....b...|....b..." },
+            { "gate", "..kkkk..|.krrrRk.|krwkkwRk|krwwwwRk|swkwwkws|krwppwRk|krkwwkRk|kkkkkkkk" },
         };
 
         /// UI icon set (9x9 art pixels, UI palette). Building signs keep using Art above.
@@ -177,6 +178,7 @@ namespace Fleeced
             { "mutton", "....KKKK.|...KPPPRK|..KPPPRRK|..KPPRRrK|.KWKPRrK.|KWWKKKK..|KWWK.....|.KK......|........." },
             { "pen", "K..K..K..K|KHKKHKKHKK|KHHHHHHHHK|KHKKRRKKHK|KHHHRRHHHK|KHKKRRKKHK|KHK.RR.KHK|KKK.KK.KKK" },
             { "wolf", "KK..........KK|KaK........KaK|KAaK......KaAK|KAAaKKKKKKaAAK|KAAAAAAAAAAAAK|KAAAAAAAAAAAAK|KAARRAAAARRAAK|KAAAAAAAAAAAAK|.KAAALLLLAAAK.|..KALLLLLLAK..|..KALLKKLLAK..|...KLQLLQLK...|....KKKKKK...." },
+            { "gate", "..KKKKK..|.KRRRRRK.|KRKWKWKrK|KRWQWWWrK|PPWKWKWPP|KRWWPWWrK|KRKWWWKrK|KRKKKKKrK|KKKKKKKKK" },
         };
 
         static Icons()
@@ -249,6 +251,7 @@ namespace Fleeced
                 case BKind.Pen: return "pen";
                 case BKind.FeedLot: return "food";
                 case BKind.Slaughter: return "mutton";
+                case BKind.SheepGate: return "gate";
             }
             return "crate";
         }

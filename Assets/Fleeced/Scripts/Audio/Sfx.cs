@@ -37,6 +37,7 @@ namespace Fleeced
             clips["squirt"] = new[] { Make(0.2f, (t, i) => Noise() * Mathf.Exp(-t * 16) * 0.3f + Mathf.Sin(t * 2 * Mathf.PI * (900 - t * 2600)) * Env(t, 0.2f) * 0.16f) };
             clips["nom"] = new[] { Make(0.12f, (t, i) => Noise() * 0.45f * Env(t, 0.12f) * ((t % 0.04f) < 0.02f ? 1f : 0.25f)) };
             clips["zap"] = new[] { Make(0.2f, (t, i) => Sq(t, 1200 + Noise() * 800) * Env(t, 0.2f) * 0.15f) };
+            clips["pop"] = new[] { Pop(440), Pop(500), Pop(390) };
         }
 
         public static void Play(string name, float vol = 1f, float pitch = 1f)
@@ -44,8 +45,23 @@ namespace Fleeced
             if (muted || src == null) return;
             AudioClip[] arr;
             if (!clips.TryGetValue(name, out arr)) return;
+            if (name == "pop" && !PopAllowed()) return;
             src.pitch = pitch;
             src.PlayOneShot(arr[rng.Next(arr.Length)], vol);
+        }
+
+        // "pop" plays at most 4 times a second (a held Sheep Gate can ask for more); the extra pops are dropped.
+        // A ring of the last 4 pop times (real time): popAt[popNext] is the oldest, and the next to be overwritten.
+        static readonly float[] popAt = { -9f, -9f, -9f, -9f };
+        static int popNext;
+
+        static bool PopAllowed()
+        {
+            float now = Time.unscaledTime;
+            if (now - popAt[popNext] < 1f) return false; // 4 pops in the last second already: drop this one
+            popAt[popNext] = now;
+            popNext = (popNext + 1) % popAt.Length;
+            return true;
         }
 
         public static void Baa(float vol = 0.6f)
@@ -99,6 +115,21 @@ namespace Fleeced
                 float saw = 2f * p - 1f;
                 float body = saw * 0.55f + Mathf.Sin(phase * 2 * Mathf.PI * 4.2f) * 0.35f;
                 return body * Mathf.Min(1, t * 120) * Mathf.Clamp01((0.075f - t) * 40f) * 0.42f;
+            });
+        }
+
+        /// a cute bubbly pop, a lamb leaving the Sheep Gate: a soft click, then a sine that bends quickly upward and dies away
+        static AudioClip Pop(float f0)
+        {
+            const float dur = 0.16f;
+            float phase = 0;
+            return Make(dur, (t, i) =>
+            {
+                float f = f0 * (1f + 2.1f * (1f - Mathf.Exp(-t * 40f)));
+                phase += f / Rate;
+                float body = Mathf.Sin(phase * 2 * Mathf.PI) + Mathf.Sin(phase * 4 * Mathf.PI) * 0.2f;
+                float click = Mathf.Sin(t * 2 * Mathf.PI * 3100) * Mathf.Exp(-t * 900);
+                return body * Mathf.Min(1, t * 1500) * Mathf.Exp(-t * 24) * Mathf.Clamp01((dur - t) * 60f) * 0.3f + click * 0.12f;
             });
         }
 

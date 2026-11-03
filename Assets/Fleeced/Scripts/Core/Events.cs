@@ -94,7 +94,7 @@ namespace Fleeced
         Sheep RandomSheep(System.Func<Sheep, bool> filter = null)
         {
             var list = new List<Sheep>();
-            foreach (var s in sheep) if (!s.dead && s.act != Act.Hidden && !s.Busy && (filter == null || filter(s))) list.Add(s);
+            foreach (var s in sheep) if (!s.dead && s.act != Act.Hidden && !s.Busy && !s.herdHand && (filter == null || filter(s))) list.Add(s);
             return list.Count == 0 ? null : list[rng.Next(list.Count)];
         }
 
@@ -112,7 +112,7 @@ namespace Fleeced
                 if (eventCooldown.TryGetValue(id, out last) && dayIndex - last < 9) return;
                 pool.Add(new KeyValuePair<string, float>(id, w));
             };
-            int pop = Population;
+            double pop = Population;
             add("merchant", 1f);
             add("wolfveg", flags.Contains("gerald_asked") ? 0 : (dayIndex >= 4 ? 1.2f : 0));
             add("luxury", HasBuilding(BKind.Market) && dayIndex >= 6 && !flags.Contains("luxury_decided") ? 1f : 0);
@@ -124,8 +124,8 @@ namespace Fleeced
             add("cult", pop >= 8 && !flags.Contains("cult_decided") ? 0.9f : 0);
             add("missing", pop >= 4 ? 0.7f : 0);
             add("suspicious", dayIndex >= 4 && !flags.Contains("shears_decided") ? 1f : 0);
-            add("immigrant", 0.7f);
-            add("truck", dayIndex >= 5 ? 0.7f : 0);
+            add("immigrant", CanName(null) ? 0.7f : 0); // new named sheep: only while the farm has names to give
+            add("truck", dayIndex >= 5 && NamedAlive + 3 <= NamedCap ? 0.7f : 0);
             add("tax", res[0] >= 300 ? 0.7f : 0);
             add("talent", pop >= 6 ? 0.6f : 0);
             add("heat", Season == 1 ? 1.2f : 0);
@@ -187,7 +187,7 @@ namespace Fleeced
             var c = Card("WORKSHOP ACCIDENT", N(s) + " got caught in the " + b.def.name + ".\n" + Cap(s.He) + " survived.\nTechnically.", "warning", s);
             c.options.Add(new EventOption("Fix the machine", "-" + cost + " coins. Fewer accidents here for 5 days.", () =>
             {
-                res[0] -= cost; b.safetyUntil = Day + 5;
+                SpendCoins(cost, CoinSrc.Event); b.safetyUntil = Day + 5;
                 foreach (var w in b.workers) AddMod(w, "Management cares (briefly)", 6, 3);
                 return "The machine is fixed. It hums menacingly, but politely.";
             }, () => res[0] >= cost));
@@ -200,7 +200,7 @@ namespace Fleeced
             }));
             c.options.Add(new EventOption("Give " + s.name + " a lollipop", "-10 coins. " + s.name + " feels much better.", () =>
             {
-                res[0] -= 10; AddMod(s, "Got a lollipop", 20, 3);
+                SpendCoins(10, CoinSrc.Event); AddMod(s, "Got a lollipop", 20, 3);
                 return s.name + " holds the lollipop with both hooves. " + Cap(s.He) + " will never forget this.";
             }, () => res[0] >= 10));
             return c;
@@ -211,14 +211,14 @@ namespace Fleeced
             var c = Card("TRAVELING MERCHANT", "A traveling merchant offers 'premium grass seeds'.\nThey are glowing slightly.", "coin");
             c.options.Add(new EventOption("Buy the seeds", "-80 coins. Probably faster grass.", () =>
             {
-                res[0] -= 80;
+                SpendCoins(80, CoinSrc.Event);
                 if (rng.NextDouble() < 0.7) { flags.Add("premium_seeds"); return "The grass grows back 40% faster. It also hums at night."; }
                 return "The seeds were painted gravel. The merchant is already gone. So is your wallet's dignity.";
             }, () => res[0] >= 80));
             c.options.Add(new EventOption("Decline", "Nothing happens.", () => "The merchant shrugs and leaves. Something in his cart goes 'baa'."));
             c.options.Add(new EventOption("Rob him", "+60 coins. Karma has been notified.", () =>
             {
-                res[0] += 60; flags.Add("robbed_merchant");
+                CreditCoins(60, CoinSrc.Event); flags.Add("robbed_merchant");
                 Schedule(4 + (float)rng.NextDouble() * 4, "revenge");
                 return "You stole 60 coins and a hat. The sheep look at you differently now.";
             }));
@@ -228,13 +228,13 @@ namespace Fleeced
         EventCard Ev_Revenge()
         {
             var c = Card("THE MERCHANT RETURNS", "The merchant you robbed is back.\nHe brought his cousins.\nThey all have sticks.", "skull");
-            c.options.Add(new EventOption("Pay damages", "-150 coins.", () => { res[0] -= Mathf.Min(150, (float)res[0]); return "The cousins count the coins slowly and leave. One of them pats a sheep. Menacingly."; }));
+            c.options.Add(new EventOption("Pay damages", "-150 coins.", () => { SpendCoins(System.Math.Min(150, res[0]), CoinSrc.Event); return "The cousins count the coins slowly and leave. One of them pats a sheep. Menacingly."; }));
             c.options.Add(new EventOption("Fight!", "Your guards (" + guardPower.ToString("0.0") + " power) vs. the cousins.", () =>
             {
-                if (rng.NextDouble() < 0.3f + guardPower * 0.2f) { res[0] += 100; totalMade[0] += 100; return "Your guards headbutt everyone. The cousins flee, dropping 100 coins and a family photo."; }
+                if (rng.NextDouble() < 0.3f + guardPower * 0.2f) { CreditCoins(100, CoinSrc.Event); totalMade[0] += 100; return "Your guards headbutt everyone. The cousins flee, dropping 100 coins and a family photo."; }
                 var v = RandomSheep(x => !x.Lamb);
                 if (v != null) { v.injured = 3; v.bloody = 2; AddDecal("blood", v.pos); }
-                res[0] -= Mathf.Min(100, (float)res[0]);
+                SpendCoins(System.Math.Min(100, res[0]), CoinSrc.Event);
                 return "It did not go well. " + (v != null ? v.name + " got bonked with a stick. " : "") + "They took 100 coins.";
             }));
             var s = RandomSheep(x => !x.Lamb);
@@ -279,7 +279,7 @@ namespace Fleeced
             }
             var v = RandomSheep(x => !x.Lamb);
             if (v == null) return null;
-            v.act = Act.Hidden; RemoveFromJob(v);
+            v.act = Act.Hidden; RemoveFromJob(v); DisbandDrove(v);
             var d = Card("ABOUT GERALD", N(v) + " is missing.\nGerald looks... round.", "wolf", null);
             d.options.Add(new EventOption("Exile Gerald", "Gerald leaves. " + v.name + " does not come back.", () =>
             {
@@ -317,9 +317,9 @@ namespace Fleeced
             c.options.Add(new EventOption("Launch a luxury wool brand", "+15% price on Clothing & Luxury forever. Sell 30 wool at 2.5x now. -6 happiness.", () =>
             {
                 flags.Add("luxury_brand");
-                int n = Mathf.Min(30, Mathf.FloorToInt((float)res[(int)Res.Wool]));
+                int n = (int)System.Math.Min(30, System.Math.Floor(res[(int)Res.Wool]));
                 int earned = Mathf.RoundToInt(n * SellPrice(Res.Wool) * 2.5f);
-                res[(int)Res.Wool] -= n; res[0] += earned; totalMade[0] += earned;
+                res[(int)Res.Wool] -= n; CreditCoins(earned, CoinSrc.Event); totalMade[0] += earned;
                 AddGlobalMod("Endless branding meetings", -6, 3);
                 return "Introducing 'Baa-sics by " + s.name + "'. You sold " + n + " wool for " + earned + " coins. The sheep now have a logo.";
             }));
@@ -336,14 +336,14 @@ namespace Fleeced
         EventCard Ev_FakeScandal()
         {
             if (!flags.Contains("fake_wool")) return null;
-            int fine = Mathf.Max(150, Mathf.RoundToInt((float)res[0] * 0.25f));
-            var c = Card("CONSUMER WATCHDOG", "Your 'premium wool' was found to be 40% lint, 30% dog, and 30% regret.\nFine: " + fine + " coins.", "skull");
-            c.options.Add(new EventOption("Pay the fine", "-" + fine + " coins.", () => { res[0] = Mathf.Max(0, (float)res[0] - fine); flags.Remove("fake_wool"); return "Fine paid. The PREMIUM labels are removed. The sheep keep one as a souvenir."; }));
-            c.options.Add(new EventOption("Bribe the inspector", "-" + fine / 2 + " coins. Might work.", () =>
+            double fine = System.Math.Max(150, System.Math.Round(res[0] * 0.25));
+            var c = Card("CONSUMER WATCHDOG", "Your 'premium wool' was found to be 40% lint, 30% dog, and 30% regret.\nFine: " + fine.ToString("0") + " coins.", "skull");
+            c.options.Add(new EventOption("Pay the fine", "-" + fine.ToString("0") + " coins.", () => { SpendCoins(System.Math.Min(fine, res[0]), CoinSrc.Fine); flags.Remove("fake_wool"); return "Fine paid. The PREMIUM labels are removed. The sheep keep one as a souvenir."; }));
+            c.options.Add(new EventOption("Bribe the inspector", "-" + System.Math.Floor(fine / 2).ToString("0") + " coins. Might work.", () =>
             {
-                res[0] = Mathf.Max(0, (float)res[0] - fine / 2);
+                SpendCoins(System.Math.Min(System.Math.Floor(fine / 2), res[0]), CoinSrc.Event);
                 if (rng.NextDouble() < 0.5) return "The inspector pockets the coins and says 'what fraud?'. The scam continues.";
-                res[0] = Mathf.Max(0, (float)res[0] - fine); flags.Remove("fake_wool");
+                SpendCoins(System.Math.Min(fine, res[0]), CoinSrc.Fine); flags.Remove("fake_wool");
                 priceMod[1] *= 0.7f; priceMod[2] *= 0.7f;
                 return "It did not work. You paid the bribe AND the fine. Wool prices drop from shame.";
             }));
@@ -363,13 +363,14 @@ namespace Fleeced
         {
             var lead = RandomSheep(x => !x.Lamb);
             if (lead == null) return null;
-            int cost = Population * 6;
+            int cost = (int)System.Math.Min(Population, 80) * 6; // a herd of millions mustn't make it impossible
             var c = Card("SHEEP STRIKE", "The flock has unionized against the conveyor.\n" + N(lead) + " is holding a tiny sign that says 'BAA'.", "sad", lead);
-            c.options.Add(new EventOption("Pay them", "-" + cost + " coins. +18 happiness for 4 days.", () => { res[0] -= cost; AddGlobalMod("Strike settlement", 18, 4); return "The flock returns to the line, rich beyond its wildest dreams (6 coins each)."; }, () => res[0] >= cost));
+            c.options.Add(new EventOption("Pay them", "-" + cost + " coins. +18 happiness for 4 days.", () => { SpendCoins(cost, CoinSrc.Event); AddGlobalMod("Strike settlement", 18, 4); return "The flock returns to the line, rich beyond its wildest dreams (6 coins each)."; }, () => res[0] >= cost));
             c.options.Add(new EventOption("Give them carrots", "-30 food. +10 happiness for 3 days.", () => { Use(Res.Food, 30); AddGlobalMod("Strike carrots", 10, 3); return "Carrots are distributed. The strike dissolves into crunching."; }, () => Has(Res.Food, 30)));
             c.options.Add(new EventOption("Ignore them", "Nobody leaves the pens for a day.", () =>
             {
                 foreach (var s in sheep) if (!s.dead) s.refuse = 1f;
+                herdStrikeUntil = Day + 1f; // nobody steps out of a herd to lead it either
                 AddGlobalMod("Ignored by management", -5, 3);
                 return "Nobody works. " + lead.name + " gives a speech. It's just 'baa' for nine minutes. It is moving.";
             }));
@@ -382,7 +383,7 @@ namespace Fleeced
             var c = Card("WOOL MARKET CRASH", "Wool prices collapse after a viral video of a naked sheep.\nWool now sells for " + SellPrice(Res.Wool).ToString("0.0") + "c.", "chart");
             c.options.Add(new EventOption("Hold your stock", "Prices will recover. Probably.", () => "You hold. The market wobbles. Nobody knows anything."));
             c.options.Add(new EventOption("Panic sell all raw wool", "Sell everything at crash prices.", () => { int e = Sell(Res.Wool, 99999, false); return "You panic-sold for " + e + " coins. An analyst somewhere is laughing."; }));
-            c.options.Add(new EventOption("Buy cheap wool", "-100 coins, +50 wool.", () => { res[0] -= 100; Gain(Res.Wool, 50); return "You bought the dip. The dip is mostly lint."; }, () => res[0] >= 100));
+            c.options.Add(new EventOption("Buy cheap wool", "-100 coins, +50 wool.", () => { SpendCoins(100, CoinSrc.Event); Gain(Res.Wool, 50); return "You bought the dip. The dip is mostly lint."; }, () => res[0] >= 100));
             return c;
         }
 
@@ -401,7 +402,7 @@ namespace Fleeced
             }));
             c.options.Add(new EventOption("Bribe " + rep.name, "-100 coins. " + rep.name + " becomes Greedy.", () =>
             {
-                res[0] -= 100; if (!rep.Has("greedy")) rep.traits.Add("greedy");
+                SpendCoins(100, CoinSrc.Event); if (!rep.Has("greedy")) rep.traits.Add("greedy");
                 return "The union dissolves overnight. " + rep.name + " buys a tiny top hat.";
             }, () => res[0] >= 100));
             return c;
@@ -415,7 +416,7 @@ namespace Fleeced
             var names = new List<string>(); foreach (var v in victims) names.Add(v.name);
             var c = Card("DISEASE OUTBREAK", "Several sheep are coughing: ^y" + string.Join(", ", names.ToArray()) + "^w.\nTheir wool is coming out slightly green.", "skull", victims[0]);
             c.options.Add(new EventOption("Quarantine them", "They can't work for 2 days.", () => { foreach (var v in victims) v.sick = 2f; return "The sick sheep are moved to a corner. They cough in unison. It's almost musical."; }));
-            c.options.Add(new EventOption("Buy medicine", "-120 coins. Everyone recovers.", () => { res[0] -= 120; return "The medicine tastes like grass. Everyone recovers. Suspicious."; }, () => res[0] >= 120));
+            c.options.Add(new EventOption("Buy medicine", "-120 coins. Everyone recovers.", () => { SpendCoins(120, CoinSrc.Event); return "The medicine tastes like grass. Everyone recovers. Suspicious."; }, () => res[0] >= 120));
             c.options.Add(new EventOption("It's probably fine", "Risky.", () =>
             {
                 string dead = "";
@@ -450,10 +451,10 @@ namespace Fleeced
             if (flyer != null) Launch(flyer);
             int cost = b.def.cost[Mathf.Max(0, b.level - 1)] / 3;
             var c = Card("MACHINE EXPLOSION", "The " + b.def.name + " exploded." + (flyer != null ? "\n" + N(flyer) + " was seen flying over the hills." : ""), "skull", flyer);
-            c.options.Add(new EventOption("Rebuild it properly", "-" + cost + " coins. Fixed instantly.", () => { res[0] -= cost; FinishConstruction(b); return "Rebuilt. It's shinier now. The bloodstains are still there, but shinier."; }, () => res[0] >= cost));
+            c.options.Add(new EventOption("Rebuild it properly", "-" + cost + " coins. Fixed instantly.", () => { SpendCoins(cost, CoinSrc.Event); FinishConstruction(b); return "Rebuilt. It's shinier now. The bloodstains are still there, but shinier."; }, () => res[0] >= cost));
             c.options.Add(new EventOption("Salvage the parts", "+" + cost / 2 + " coins, building loses a level.", () =>
             {
-                res[0] += cost / 2; if (b.level > 1) b.level--;
+                CreditCoins(cost / 2, CoinSrc.Refund); if (b.level > 1) b.level--;
                 FinishConstruction(b);
                 return "You sold the good parts. The rest is held together with string.";
             }));
@@ -510,7 +511,7 @@ namespace Fleeced
         {
             var s = RandomSheep(x => !x.Lamb);
             if (s == null) return null;
-            s.act = Act.Hidden; RemoveFromJob(s);
+            s.act = Act.Hidden; RemoveFromJob(s); DisbandDrove(s);
             var c = Card("MISSING SHEEP", N(s) + " hasn't been seen since yesterday.", "pop");
             c.options.Add(new EventOption("Send a search party", "Probably finds " + s.Him + ".", () =>
             {
@@ -525,7 +526,7 @@ namespace Fleeced
             }));
             c.options.Add(new EventOption("Put up posters", "-10 coins. Maybe " + s.He + " comes back.", () =>
             {
-                res[0] -= 10;
+                SpendCoins(10, CoinSrc.Event);
                 if (rng.NextDouble() < 0.55) { Schedule(1.5f, "returns", s.id); return "The posters say 'HAVE YOU SEEN THIS SHEEP' and show a cloud. You wait."; }
                 Vanish(s, "Never found. The posters are still up.");
                 return "Nobody calls. The posters fade in the rain.";
@@ -550,26 +551,26 @@ namespace Fleeced
             var c = Card("SUSPICIOUS MERCHANT", "A man in a trenchcoat offers 'definitely legal' industrial shears.\nThey are still warm.", "shears");
             c.options.Add(new EventOption("Buy them", "-150 coins. +50% wool per shear.", () =>
             {
-                res[0] -= 150; flags.Add("illegal_shears");
+                SpendCoins(150, CoinSrc.Event); flags.Add("illegal_shears");
                 Schedule(5 + (float)rng.NextDouble() * 5, "inspection");
                 return "The shears are incredible. They also have a serial number scratched off.";
             }, () => res[0] >= 150));
             c.options.Add(new EventOption("Decline", "", () => "The man vanishes into a bush. The bush leaves too."));
-            c.options.Add(new EventOption("Report him", "+50 coins reward.", () => { res[0] += 50; return "The authorities thank you. The man in the trenchcoat will remember this."; }));
+            c.options.Add(new EventOption("Report him", "+50 coins reward.", () => { CreditCoins(50, CoinSrc.Event); return "The authorities thank you. The man in the trenchcoat will remember this."; }));
             return c;
         }
 
         EventCard Ev_Inspection()
         {
             if (!flags.Contains("illegal_shears")) return null;
-            int fine = Mathf.Max(200, Mathf.RoundToInt((float)res[0] * 0.3f));
-            var c = Card("ILLEGAL WOOL OPERATION", "A Wool Inspector found your 'definitely legal' shears.\nThey are very illegal.\nFine: " + fine + " coins.", "skull");
-            c.options.Add(new EventOption("Pay the fine", "-" + fine + " coins, lose the shears.", () => { res[0] = Mathf.Max(0, (float)res[0] - fine); flags.Remove("illegal_shears"); return "The shears are confiscated. The inspector keeps them. For evidence. At home."; }));
+            double fine = System.Math.Max(200, System.Math.Round(res[0] * 0.3));
+            var c = Card("ILLEGAL WOOL OPERATION", "A Wool Inspector found your 'definitely legal' shears.\nThey are very illegal.\nFine: " + fine.ToString("0") + " coins.", "skull");
+            c.options.Add(new EventOption("Pay the fine", "-" + fine.ToString("0") + " coins, lose the shears.", () => { SpendCoins(System.Math.Min(fine, res[0]), CoinSrc.Fine); flags.Remove("illegal_shears"); return "The shears are confiscated. The inspector keeps them. For evidence. At home."; }));
             c.options.Add(new EventOption("Bribe the inspector", "-120 coins. 60% chance to keep the shears.", () =>
             {
-                res[0] = Mathf.Max(0, (float)res[0] - 120);
+                SpendCoins(System.Math.Min(120, res[0]), CoinSrc.Event);
                 if (rng.NextDouble() < 0.6) return "The inspector says 'nice shears' and leaves. The operation continues.";
-                res[0] = Mathf.Max(0, (float)res[0] - fine); flags.Remove("illegal_shears");
+                SpendCoins(System.Math.Min(fine, res[0]), CoinSrc.Fine); flags.Remove("illegal_shears");
                 return "The inspector was wearing a wire. You pay the bribe AND the fine.";
             }));
             var s = RandomSheep(x => !x.Lamb);
@@ -587,7 +588,7 @@ namespace Fleeced
         {
             var c = Card("RESEARCH ACCIDENT", N(s) + " mixed two flasks.\nNow " + s.He + " has three eyes.", "research", s);
             c.options.Add(new EventOption("Science!", "+30 RP.", () => { AddRP(30); return "Peer review is pending. The peers are scared."; }));
-            c.options.Add(new EventOption("Clean up", "-40 coins, " + s.name + " feels better.", () => { res[0] -= 40; AddMod(s, "Got a nice eyepatch", 10, 4); return s.name + " gets a tiny eyepatch for the extra eye. It doesn't help, but it's stylish."; }, () => res[0] >= 40));
+            c.options.Add(new EventOption("Clean up", "-40 coins, " + s.name + " feels better.", () => { SpendCoins(40, CoinSrc.Event); AddMod(s, "Got a nice eyepatch", 10, 4); return s.name + " gets a tiny eyepatch for the extra eye. It doesn't help, but it's stylish."; }, () => res[0] >= 40));
             c.options.Add(new EventOption("Ask the third eye what it sees", "???", () => { flags.Add("moon_vision"); AddRP(10); return "'The moon,' it says. 'There is grass on the moon.' Then it blinks. Separately."; }));
             return c;
         }
@@ -599,12 +600,13 @@ namespace Fleeced
             var c = Card("RARE IMMIGRANT", "A " + VariantName(v) + " sheep named ^y" + name + "^w wandered in from the hills.\n^k" + VariantDesc(v), "sheep");
             System.Func<Sheep> make = () =>
             {
+                if (!CanName(null)) { var pen = FirstPen(); if (pen != null) { HerdAddAdults(pen, rng.NextDouble() < 0.5, 0, 1, 0.6f, 0f, 0.2f); Ledger(1); } return null; } // no name left: the herd
                 var s = CreateSheep(new Vector2(owned.center.x, owned.yMin + 0.6f));
                 usedNames.Remove(s.name); s.name = name; s.go.name = name; usedNames.Add(name); s.variant = v;
                 return s;
             };
-            c.options.Add(new EventOption("Welcome!", "+1 rare sheep.", () => { var s = make(); return s.name + " moves in and immediately eats a flower."; }));
-            c.options.Add(new EventOption("Charge an entry fee", "+1 rare sheep, +25 coins, " + name + " is annoyed.", () => { var s = make(); res[0] += 25; AddMod(s, "Paid to get in", -15, 4); return name + " pays in buttons. You accept buttons."; }));
+            c.options.Add(new EventOption("Welcome!", "+1 rare sheep.", () => { var s = make(); return s != null ? s.name + " moves in and immediately eats a flower." : name + " joins the herd. Nobody will learn " + "that name now."; }));
+            c.options.Add(new EventOption("Charge an entry fee", "+1 rare sheep, +25 coins, " + name + " is annoyed.", () => { var s = make(); CreditCoins(25, CoinSrc.Event); if (s != null) AddMod(s, "Paid to get in", -15, 4); return name + " pays in buttons. You accept buttons."; }));
             c.options.Add(new EventOption("Shoo", "", () => name + " wanders back into the hills, looking betrayed."));
             return c;
         }
@@ -615,26 +617,30 @@ namespace Fleeced
             var c = Card("TRUCK CRASH", "A truck carrying " + n + " sheep to a 'farm' crashed nearby.\nThe driver is fine. The sheep are looking at you.", "sheep");
             c.options.Add(new EventOption("Rescue them", "+" + n + " sheep. +5 happiness (heroes!).", () =>
             {
-                for (int i = 0; i < n; i++) { var s = CreateSheep(new Vector2(owned.center.x + i * 0.7f, owned.yMin + 0.6f)); AddMod(s, "Rescued!", 15, 4); }
+                for (int i = 0; i < n; i++)
+                {
+                    if (!CanName(null)) { var pen = FirstPen(); if (pen != null) { HerdAddAdults(pen, rng.NextDouble() < 0.5, 0, 1, 0.6f, 0f, 0.2f); Ledger(1); } continue; } // no name left: the herd
+                    var s = CreateSheep(new Vector2(owned.center.x + i * 0.7f, owned.yMin + 0.6f)); AddMod(s, "Rescued!", 15, 4);
+                }
                 AddGlobalMod("We are heroes", 5, 3);
                 return "The rescued sheep cry with joy. Then they eat your grass.";
             }));
-            c.options.Add(new EventOption("Loot the truck", "+coins.", () => { int amt = 80 + rng.Next(80); res[0] += amt; return "You find " + amt + " coins and a sad sandwich. The sheep wander off."; }));
+            c.options.Add(new EventOption("Loot the truck", "+coins.", () => { int amt = 80 + rng.Next(80); CreditCoins(amt, CoinSrc.Event); return "You find " + amt + " coins and a sad sandwich. The sheep wander off."; }));
             c.options.Add(new EventOption("Ignore it", "", () => "You look away. The flock does not."));
             return c;
         }
 
         EventCard Ev_Tax()
         {
-            int tax = Mathf.RoundToInt((float)res[0] * 0.1f);
+            double tax = System.Math.Round(res[0] * 0.1); // a double: as an int it turned into a payout above about 21 billion coins
             var s = RandomSheep(x => !x.Lamb && !x.Has("glutton") || x.Has("glutton"));
-            var c = Card("TAX COLLECTOR", "The Royal Wool Tax Collector demands 10% of your coins (" + tax + ").", "coin");
-            c.options.Add(new EventOption("Pay", "-" + tax + " coins.", () => { res[0] -= tax; return "The tax collector stamps a form, smells a sheep, and leaves."; }));
+            var c = Card("TAX COLLECTOR", "The Royal Wool Tax Collector demands 10% of your coins (" + tax.ToString("0") + ").", "coin");
+            c.options.Add(new EventOption("Pay", "-" + tax.ToString("0") + " coins.", () => { SpendCoins(tax, CoinSrc.Event); return "The tax collector stamps a form, smells a sheep, and leaves."; }));
             if (s != null)
                 c.options.Add(new EventOption("Hide the coins in " + s.name, "Risky.", () =>
                 {
                     if (rng.NextDouble() < 0.5) return "The tax collector finds nothing. " + s.name + " jingles slightly when walking.";
-                    res[0] -= tax * 2;
+                    SpendCoins(tax * 2, CoinSrc.Event);
                     return s.name + " swallowed the coins. Then the tax collector found them anyway. You pay double. " + s.name + " still jingles.";
                 }));
             if (flags.Contains("gerald"))
@@ -649,7 +655,7 @@ namespace Fleeced
             var c = Card("TALENT SHOW", "The flock wants to hold a talent show.\n" + N(s) + " has been practicing something.", "happy", s);
             c.options.Add(new EventOption("Allow it", "-15 food. +12 happiness for 3 days.", () => { Use(Res.Food, Mathf.Min(15, (float)res[(int)Res.Food])); AddGlobalMod("Talent show", 12, 3); AddMod(s, "Star of the show", 15, 4); return s.name + " juggles three lambs. Standing ovation."; }));
             c.options.Add(new EventOption("Deny it", "-4 happiness.", () => { AddGlobalMod("No talent show", -4, 2); return "The flock stares at you. " + s.name + " juggles anyway, sadly, alone."; }));
-            c.options.Add(new EventOption("Sell tickets", "+60 coins, +5 happiness.", () => { res[0] += 60; AddGlobalMod("Talent show", 5, 2); return "Humans pay to watch " + s.name + ". The act is mostly screaming. It sells out."; }));
+            c.options.Add(new EventOption("Sell tickets", "+60 coins, +5 happiness.", () => { CreditCoins(60, CoinSrc.Event); AddGlobalMod("Talent show", 5, 2); return "Humans pay to watch " + s.name + ". The act is mostly screaming. It sells out."; }));
             return c;
         }
 
@@ -660,9 +666,10 @@ namespace Fleeced
             {
                 int n = 0;
                 foreach (var s in sheep) if (!s.dead && !s.Busy && s.act != Act.Hidden && s.wool >= 0.35f) { DoShear(s, null, false); n++; }
-                return "You shear " + n + " sheep in an hour. It's raining wool. Everyone is cold now. In summer.";
+                double herd = ShearAllHerds(0.35f); // and every herd with some wool
+                return "You shear " + UI.Fmt(n + herd) + " sheep in an hour. It's raining wool. Everyone is cold now. In summer.";
             }));
-            c.options.Add(new EventOption("Build sprinklers", "-80 coins. +6 happiness.", () => { res[0] -= 80; AddGlobalMod("Sprinkler party", 6, 3); return "The sprinklers work great. Several sheep have fallen asleep in the mud."; }, () => res[0] >= 80));
+            c.options.Add(new EventOption("Build sprinklers", "-80 coins. +6 happiness.", () => { SpendCoins(80, CoinSrc.Event); AddGlobalMod("Sprinkler party", 6, 3); return "The sprinklers work great. Several sheep have fallen asleep in the mud."; }, () => res[0] >= 80));
             c.options.Add(new EventOption("Do nothing", "Fluffy sheep will suffer.", () =>
             {
                 foreach (var s in sheep) if (!s.dead && s.wool > 0.8f) { AddMod(s, "Heatstroke", -20, 2); if (rng.NextDouble() < 0.3) s.unconscious = 10; }
@@ -673,9 +680,9 @@ namespace Fleeced
 
         EventCard Ev_Winter()
         {
-            int n = Population;
+            int n = (int)System.Math.Min(Population, 80);
             var c = Card("WINTER IS HERE", "It is snowing.\nThe shaved sheep regret everything.", "warning");
-            c.options.Add(new EventOption("Buy blankets", "-" + n * 6 + " coins. +10 happiness all winter.", () => { res[0] -= n * 6; AddGlobalMod("Blankets", 10, DaysPerSeason); return "Every sheep gets a tiny blanket. They wear them like capes."; }, () => res[0] >= n * 6));
+            c.options.Add(new EventOption("Buy blankets", "-" + n * 6 + " coins. +10 happiness all winter.", () => { SpendCoins(n * 6, CoinSrc.Event); AddGlobalMod("Blankets", 10, DaysPerSeason); return "Every sheep gets a tiny blanket. They wear them like capes."; }, () => res[0] >= n * 6));
             c.options.Add(new EventOption("Knit sweaters from their own wool", "-" + n * 2 + " wool. +10 happiness all winter.", () => { Use(Res.Wool, n * 2); AddGlobalMod("Wearing themselves", 10, DaysPerSeason); return "The sheep are wearing their own wool. It's fine. Don't think about it."; }, () => Has(Res.Wool, n * 2)));
             c.options.Add(new EventOption("Let them huddle", "-3 happiness.", () => { AddGlobalMod("Huddling", -3, 3); return "The sheep form a giant fluffy ball. Some are in the middle. Some are not."; }));
             return c;
@@ -684,11 +691,11 @@ namespace Fleeced
         EventCard Ev_Influencer()
         {
             var c = Card("SHEEP INFLUENCER", "A famous sheep influencer wants a photoshoot at your farm.\n4.2 million followers. Mostly bots. Mostly sheep.", "happy");
-            c.options.Add(new EventOption("Accept", "+100 coins. Prices +10%.", () => { res[0] += 100; for (int i = 1; i < ResInfo.Count - 1; i++) priceMod[i] *= 1.1f; return "Your farm goes viral. #fleeced is trending."; }));
+            c.options.Add(new EventOption("Accept", "+100 coins. Prices +10%.", () => { CreditCoins(100, CoinSrc.Event); for (int i = 1; i < ResInfo.Count - 1; i++) priceMod[i] *= 1.1f; return "Your farm goes viral. #fleeced is trending."; }));
             c.options.Add(new EventOption("Decline", "", () => "The influencer posts a vague, sad photo of your fence."));
             c.options.Add(new EventOption("Demand payment", "+200 coins. Might backfire.", () =>
             {
-                if (rng.NextDouble() < 0.7) { res[0] += 200; return "They pay. The photos are 90% filters. Your sheep look fantastic."; }
+                if (rng.NextDouble() < 0.7) { CreditCoins(200, CoinSrc.Event); return "They pay. The photos are 90% filters. Your sheep look fantastic."; }
                 for (int i = 1; i < ResInfo.Count - 1; i++) priceMod[i] *= 0.9f;
                 return "The influencer storms off and posts a 40-minute video about you. Prices drop 10%.";
             }));
@@ -707,7 +714,7 @@ namespace Fleeced
 
         Sheep GoldenSheep()
         {
-            foreach (var s in sheep) if (!s.dead && s.act != Act.Hidden && s.variant == Variant.Golden) return s;
+            foreach (var s in sheep) if (!s.dead && s.act != Act.Hidden && s.variant == Variant.Golden && !s.Has("clone")) return s; // the Collector wants originals
             return null;
         }
 
@@ -715,9 +722,9 @@ namespace Fleeced
         {
             var s = GoldenSheep();
             if (s == null) return null;
-            int price = 900 + rng.Next(600);
+            int price = Mathf.RoundToInt((900 + rng.Next(600)) * CoinTierMult); // the Collector pays with the coin tier too
             var c = Card("THE COLLECTOR", "A rich collector wants to buy " + N(s) + " the Golden Fleece for " + price + " coins.\nHe has a very large glass case.", "coin", s);
-            c.options.Add(new EventOption("Sell " + s.name, "+" + price + " coins.", () => { res[0] += price; totalMade[0] += price; Vanish(s, "Sold to a collector. Lives in a glass case now."); AddGlobalMod("A friend was sold", -8, 3); return s.name + " is carried away in a glass case. " + Cap(s.He) + " waves."; }));
+            c.options.Add(new EventOption("Sell " + s.name, "+" + price + " coins.", () => { if (s.dead) return s.name + " is not here any more. The collector leaves with an empty glass case."; CreditCoins(price, CoinSrc.Event); totalMade[0] += price; Vanish(s, "Sold to a collector. Lives in a glass case now."); AddGlobalMod("A friend was sold", -8, 3); return s.name + " is carried away in a glass case. " + Cap(s.He) + " waves."; }));
             c.options.Add(new EventOption("Not for sale", s.name + " is happy.", () => { AddMod(s, "Not for sale!", 20, 6); return s.name + " is deeply touched. " + Cap(s.He) + " sheds a golden tear (+1 wool)."; }));
             return c;
         }
@@ -746,9 +753,11 @@ namespace Fleeced
 
         void Vanish(Sheep s, string cause)
         {
+            if (s.dead) return; // a card about a sheep that is gone already (sold, or back in its herd) changes nothing
             RemoveFromJob(s);
+            DisbandDrove(s); Ledger(-1);
             s.dead = true; s.deathCause = cause;
-            graveyard.Add(new DeadRecord { name = s.name, cause = cause, level = s.level, day = Day, age = s.ageDays, traits = TraitList(s) });
+            if (!s.herdHand) graveyard.Add(new DeadRecord { name = s.name, cause = cause, level = s.level, day = Day, age = s.ageDays, traits = TraitList(s) });
             if (s.go != null) { Destroy(s.go); Destroy(s.shadow.gameObject); s.go = null; }
             sheep.Remove(s);
             if (selSheep == s) selSheep = null;
@@ -759,10 +768,10 @@ namespace Fleeced
         void ScheduleWolves()
         {
             if (dayIndex == DaysPerSeason * 3 || (Season == 3 && DayOfSeason == 1)) QueueEvent(Ev_Winter());
-            if (flags.Contains("cult_money")) { int d = Population; res[0] += d; totalMade[0] += d; }
+            if (flags.Contains("cult_money")) { int d = (int)System.Math.Min(Population, 80); CreditCoins(d, CoinSrc.Event); totalMade[0] += d; }
             if (dayIndex < 8 || !tutDone) return;
             if (flags.Contains("gerald_guard") && rng.NextDouble() < 0.5) return;
-            if (rng.NextDouble() < Mathf.Min(0.16f, 0.06f + Population * 0.002f))
+            if (rng.NextDouble() < Mathf.Min(0.16f, 0.06f + (float)Population * 0.002f))
             {
                 int n = Population > 25 && rng.NextDouble() < 0.3 ? 2 : 1;
                 for (int i = 0; i < n; i++) SpawnWolf();
@@ -778,8 +787,8 @@ namespace Fleeced
             if (target == null) return;
             var w = new Wolf();
             int side = rng.Next(4);
-            float x = side == 0 ? 0.5f : side == 1 ? MapW - 0.5f : Random.Range(5f, MapW - 5f);
-            float y = side == 2 ? 0.5f : side == 3 ? MapH - 0.5f : Random.Range(5f, MapH - 5f);
+            float x = side == 0 ? 0.5f : side == 1 ? MapW - 0.5f : 5f + (float)rng.NextDouble() * (MapW - 10f);
+            float y = side == 2 ? 0.5f : side == 3 ? MapH - 0.5f : 5f + (float)rng.NextDouble() * (MapH - 10f);
             w.pos = new Vector2(x, y);
             w.target = target;
             w.go = new GameObject("wolf");
@@ -820,7 +829,7 @@ namespace Fleeced
                     // Gerald wanders around with the flock
                     if ((w.wander - w.pos).sqrMagnitude < 0.05f || w.timer <= 0)
                     {
-                        w.wander = new Vector2(Random.Range(owned.xMin + 1f, owned.xMax - 1f), Random.Range(owned.yMin + 1f, owned.yMax - 1f));
+                        w.wander = new Vector2(owned.xMin + 1f + (float)rng.NextDouble() * (owned.width - 2f), owned.yMin + 1f + (float)rng.NextDouble() * (owned.height - 2f));
                         w.timer = 6;
                     }
                     w.timer -= dt;
@@ -902,6 +911,7 @@ namespace Fleeced
         public string LaunchBlocker(Building b)
         {
             if (!b.Built) return "Finish construction first";
+            if (rocketGo == null) return "The rocket is already on the moon";
             if (LaunchVolunteer() == null) return "No sheep to launch";
             if (powerFactor < 0.99f) return "Needs full power (" + Mathf.RoundToInt(powerMade) + "/" + Mathf.RoundToInt(powerNeed) + ")";
             return null;
@@ -918,7 +928,7 @@ namespace Fleeced
         {
             if (LaunchBlocker(b) != null) return;
             astronaut = LaunchVolunteer();
-            astronaut.act = Act.Hidden; RemoveFromJob(astronaut);
+            astronaut.act = Act.Hidden; RemoveFromJob(astronaut); DisbandDrove(astronaut);
             launchSeq = 0.001f;
             followSheep = null; selBuilding = null; selSheep = null; panel = Panel.None;
             FocusOn(new Vector2(b.x + 1.5f, b.y + 3));
@@ -928,7 +938,8 @@ namespace Fleeced
 
         void SimLaunch(float rdt)
         {
-            if (launchSeq <= 0 || rocketGo == null) return;
+            if (launchSeq <= 0) return;
+            if (rocketGo == null) { AbortLaunch(); return; }
             launchSeq += rdt;
             float t = launchSeq;
             shake = Mathf.Max(shake, t < 4 ? 0.8f : 0.3f);
@@ -952,11 +963,20 @@ namespace Fleeced
                 string n = astronaut != null ? astronaut.name : "The astronaut";
                 if (astronaut != null) Vanish(astronaut, "Went to the moon. Is still there.");
                 foreach (var s in sheep) if (!s.dead) AddMod(s, "WE WENT TO SPACE", 25, 10);
-                var c = Card("THE MOON", "Transmission from " + n + ":\n\n'baa.'\n\nThe moon contains no grass. " + n + " is up there forever. The flock considers this a total success.\n\n^kDays: " + dayIndex + "   Sheep: " + Population + "   Deaths: " + deaths + "   Accidents: " + accidents + "   Coins earned: " + Mathf.RoundToInt((float)totalMade[0]), "moon");
+                var c = Card("THE MOON", "Transmission from " + n + ":\n\n'baa.'\n\nThe moon contains no grass. " + n + " is up there forever. The flock considers this a total success.\n\n^kDays: " + dayIndex + "   Sheep: " + UI.Fmt(Population) + "   Deaths: " + deaths + "   Accidents: " + accidents + "   Coins earned: " + totalMade[0].ToString("0"), "moon");
                 c.options.Add(new EventOption("Keep managing", "The flock goes on.", () => null));
                 QueueEvent(c);
                 Sfx.Play("fanfare", 1f);
             }
+        }
+
+        /// a launch with no rocket on the pad would pause the game forever (no HUD, no input, no saving): undo it
+        void AbortLaunch()
+        {
+            launchSeq = 0;
+            if (astronaut != null && !astronaut.dead && astronaut.act == Act.Hidden) astronaut.act = Act.Wander;
+            astronaut = null;
+            Log("^oLaunch cancelled.^w There is no rocket on the pad.");
         }
     }
 }

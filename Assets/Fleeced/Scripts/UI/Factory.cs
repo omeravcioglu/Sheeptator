@@ -10,14 +10,15 @@ namespace Fleeced
         // ---------------- daily stats ----------------
         public class DayStats
         {
-            public int born, slaughtered, sold, died, pop;
-            public float eaten;
-            public float[] made = new float[ResInfo.Count];
+            public int born, slaughtered, sold, died, gate;
+            public double pop;
+            public double eaten;
+            public double[] made = new double[ResInfo.Count];
             public Dictionary<int, int> cycles = new Dictionary<int, int>();
         }
         DayStats statSnap, statYesterday;
         public DayStats Yesterday { get { return statYesterday; } }
-        public float foodEaten;      // every bite, for the food balance
+        public double foodEaten;     // every bite, for the food balance
         public int soldAlive;        // sheep sold alive (Market doors and the SELL button)
         public bool showPlates = true;
         float factoryContentH;
@@ -25,13 +26,20 @@ namespace Fleeced
         public void CountAdults(out int rams, out int ewes)
         {
             rams = 0; ewes = 0;
-            foreach (var s in sheep) { if (s.dead || s.act == Act.Hidden || s.Lamb) continue; if (s.male) rams++; else ewes++; }
+            foreach (var s in sheep)
+            {
+                if (s.dead || s.act == Act.Hidden) continue;
+                if (s.drove != null) { if (s.male) rams = Bump(rams, s.drove.n); else ewes = Bump(ewes, s.drove.n); }
+                if (s.Lamb) continue;
+                if (s.male) rams++; else ewes++;
+            }
+            foreach (var b in buildings) if (b.herd != null) { rams = Bump(rams, b.herd.Rams); ewes = Bump(ewes, b.herd.Ewes); }
         }
 
         DayStats TakeStatSnap()
         {
-            var d = new DayStats { born = births, slaughtered = slaughtered, sold = soldAlive, died = deaths, eaten = foodEaten, pop = Population };
-            for (int i = 0; i < ResInfo.Count; i++) d.made[i] = (float)totalMade[i];
+            var d = new DayStats { born = births, slaughtered = slaughtered, sold = soldAlive, died = deaths, eaten = foodEaten, pop = Population, gate = gateReleased };
+            for (int i = 0; i < ResInfo.Count; i++) d.made[i] = totalMade[i];
             foreach (var b in buildings) d.cycles[b.id] = b.cyclesDone;
             return d;
         }
@@ -47,7 +55,7 @@ namespace Fleeced
                 var y = new DayStats
                 {
                     born = now.born - statSnap.born, slaughtered = now.slaughtered - statSnap.slaughtered, sold = now.sold - statSnap.sold,
-                    died = now.died - statSnap.died, eaten = now.eaten - statSnap.eaten, pop = now.pop - statSnap.pop,
+                    died = now.died - statSnap.died, eaten = now.eaten - statSnap.eaten, pop = now.pop - statSnap.pop, gate = now.gate - statSnap.gate,
                 };
                 for (int i = 0; i < ResInfo.Count; i++) y.made[i] = now.made[i] - statSnap.made[i];
                 foreach (var kv in now.cycles) { int before; y.cycles[kv.Key] = kv.Value - (statSnap.cycles.TryGetValue(kv.Key, out before) ? before : 0); }
@@ -63,6 +71,7 @@ namespace Fleeced
             switch (k)
             {
                 case BKind.Pen: return "Home: sheep live here, make lambs";
+                case BKind.SheepGate: return "Hold SPACE: lambs into the pen";
                 case BKind.FeedLot: return "Hungry sheep in, fed sheep out";
                 case BKind.Shed: return "Sheep in: WOOL off, sheep out";
                 case BKind.Dairy: return "Ewes in: MILK off, ewes out";
@@ -226,7 +235,7 @@ namespace Fleeced
         /// the one-line verdict at the top of the FACTORY panel
         public string FactoryVerdict()
         {
-            int pop = Population;
+            double pop = Population;
             var yd = statYesterday;
             if (popCap > 0 && pop >= popCap) return "^oThe pens are FULL: no more lambs. Upgrade or build a Breeding Pen, or slaughter / sell the extras.";
             int rams, ewes; CountAdults(out rams, out ewes);
@@ -234,8 +243,8 @@ namespace Fleeced
             if (Mathf.Min(rams, ewes) * 2 < Mathf.Max(rams, ewes))
                 return "^oOnly " + Mathf.Min(rams, ewes) + " breeding couples (" + rams + " rams, " + ewes + " ewes). Keep the " + (rams > ewes ? "ewes; slaughter the extra RAMS (door filter RAMS)." : "rams; slaughter the extra EWES (door filter EWES).");
             if (yd != null && yd.eaten > yd.made[(int)Res.Food] + 4 && res[(int)Res.Food] < 150) return "^rThe flock eats more food than the farms grow. Build or upgrade Farms.";
-            if (yd != null && yd.slaughtered + yd.sold > yd.born + 1) return "^oYou are thinning the flock faster than it breeds. Fewer sheep means less wool and milk tomorrow.";
-            if (yd != null && yd.born > 0 && pop < popCap) return "^gThe flock is growing. Keep the Feeding Lots and Farms ahead of it.";
+            if (yd != null && yd.slaughtered + yd.sold > yd.born + yd.gate + 1) return "^oYou are thinning the flock faster than it breeds. Fewer sheep means less wool and milk tomorrow.";
+            if (yd != null && yd.born + yd.gate > 0 && pop < popCap) return "^gThe flock is growing. Keep the Feeding Lots and Farms ahead of it.";
             return "^kKeep the doors routing: Pen > Feeding Lot > machines > back to the Pen. Slaughter only what you cannot feed or house.";
         }
 
@@ -248,13 +257,27 @@ namespace Fleeced
             float aw = area.width - 6;
             UI.BeginScroll(area, ref scrollJobs, factoryContentH);
             float yy = 0;
-            int pop = Population, lambs = 0, rams = 0, ewes = 0, fluffy = 0, milky = 0;
+            double pop = Population;
+            int lambs = 0, rams = 0, ewes = 0, fluffy = 0, milky = 0;
             foreach (var s in sheep)
             {
                 if (s.dead || s.act == Act.Hidden) continue;
                 if (s.Lamb) lambs++; else if (s.male) rams++; else ewes++;
                 if (!s.Lamb && s.wool >= 0.98f) fluffy++;
                 if (!s.Lamb && !s.male && s.milk >= 0.98f) milky++;
+                var d = s.drove;
+                if (d == null) continue;
+                if (s.male) rams = Bump(rams, d.n); else ewes = Bump(ewes, d.n);
+                if (d.wool >= 0.98f) fluffy = Bump(fluffy, d.n);
+                if (!s.male && d.milk >= 0.98f) milky = Bump(milky, d.n);
+            }
+            foreach (var b in buildings)
+            {
+                var h = b.herd;
+                if (h == null) continue;
+                lambs = Bump(lambs, h.Lambs); rams = Bump(rams, h.Rams); ewes = Bump(ewes, h.Ewes);
+                if (h.wool >= 0.98f) fluffy = Bump(fluffy, h.Adults);
+                if (h.milk >= 0.98f) milky = Bump(milky, h.Ewes);
             }
             var yd = statYesterday;
             FLine(ref yy, aw, FactoryVerdict());
@@ -262,14 +285,15 @@ namespace Fleeced
 
             // the flock: the one resource everything else comes from
             UI.Heading(0, yy, "FLOCK"); yy += 12;
-            FLine(ref yy, aw, "^w" + pop + "^k sheep, ^w" + popCap + "^k pen space.  ^w" + rams + "^k rams, ^w" + ewes + "^k ewes, ^p" + lambs + "^k lambs.");
-            UI.Bar(new Rect(0, yy, aw, 8), popCap > 0 ? Mathf.Clamp01(pop / (float)popCap) : 1f, pop >= popCap ? UI.Bad : UI.Good, pop + " / " + popCap); yy += 11;
-            FLine(ref yy, aw, "^kReady now: ^w" + fluffy + "^k fluffy, ^w" + milky + "^k full udders.");
+            FLine(ref yy, aw, "^w" + UI.Fmt(pop) + "^k sheep, ^w" + UI.Fmt(popCap) + "^k pen space.  ^w" + UI.Fmt(rams) + "^k rams, ^w" + UI.Fmt(ewes) + "^k ewes, ^p" + UI.Fmt(lambs) + "^k lambs.");
+            UI.Bar(new Rect(0, yy, aw, 8), popCap > 0 ? Mathf.Clamp01((float)(pop / popCap)) : 1f, pop >= popCap ? UI.Bad : UI.Good, UI.Fmt(pop) + " / " + UI.Fmt(popCap)); yy += 11;
+            if (HerdCount >= 1) FLine(ref yy, aw, "^w" + NamedAlive + "^k named (at most " + NamedCap + "), ^w" + UI.Fmt(HerdCount) + "^k in herds and droves. Droves of up to ^w" + UI.Fmt(DroveSize) + "^k.");
+            FLine(ref yy, aw, "^kReady now: ^w" + UI.Fmt(fluffy) + "^k fluffy, ^w" + UI.Fmt(milky) + "^k full udders.");
             if (yd == null) FLine(ref yy, aw, "^kYesterday's numbers appear after one full day.");
             else
             {
-                int net = yd.born - yd.slaughtered - yd.sold - yd.died;
-                FLine(ref yy, aw, "^kYesterday: ^p+" + yd.born + " born^k, ^r-" + yd.slaughtered + " slaughtered^k, ^o-" + yd.sold + " sold^k, ^r-" + yd.died + " died^k.  Net " + (net > 0 ? "^g+" : net < 0 ? "^r" : "^w") + net);
+                int net = yd.born + yd.gate - yd.slaughtered - yd.sold - yd.died;
+                FLine(ref yy, aw, "^kYesterday: ^p+" + yd.born + " born^k, " + (yd.gate > 0 ? "^p+" + yd.gate + " from the gate^k, " : "") + "^r-" + yd.slaughtered + " slaughtered^k, ^o-" + yd.sold + " sold^k, ^r-" + yd.died + " died^k.  Net " + (net > 0 ? "^g+" : net < 0 ? "^r" : "^w") + net);
             }
             yy += 3;
 
@@ -277,10 +301,10 @@ namespace Fleeced
             UI.Heading(0, yy, "FOOD"); yy += 12;
             if (yd != null)
             {
-                float made = yd.made[(int)Res.Food], ate = yd.eaten, bal = made - ate;
+                float made = (float)yd.made[(int)Res.Food], ate = (float)yd.eaten, bal = made - ate;
                 FLine(ref yy, aw, "^kYesterday: grown ^g" + Mathf.RoundToInt(made) + "^k, eaten ^o" + Mathf.RoundToInt(ate) + "^k.  " + (bal >= 0 ? "^g+" : "^r") + Mathf.RoundToInt(bal) + "^k a day.");
             }
-            FLine(ref yy, aw, "^kIn store: ^y" + UI.Fmt(res[(int)Res.Food]) + "^k. The flock needs ~^w" + Mathf.RoundToInt((pop - lambs) * 4f) + "^k a day.");
+            FLine(ref yy, aw, "^kIn store: ^y" + UI.Fmt(res[(int)Res.Food]) + "^k. The flock needs ~^w" + UI.Fmt((pop - lambs) * 4) + "^k a day.");
             yy += 3;
 
             // what the factory made
@@ -290,9 +314,9 @@ namespace Fleeced
             {
                 string made = "";
                 foreach (var rr in new[] { Res.Wool, Res.Milk, Res.Mutton, Res.Silk, Res.Cream, Res.GoldFleece, Res.GlowWool, Res.ChocoMilk, Res.CottonCandy, Res.Cheese, Res.CleanWool, Res.Yarn, Res.Fabric, Res.Clothing, Res.Luxury })
-                    if (yd.made[(int)rr] >= 0.5f) made += "^w" + Mathf.RoundToInt(yd.made[(int)rr]) + "^k " + ResInfo.Names[(int)rr].ToLower() + ", ";
+                    if (yd.made[(int)rr] >= 0.5f) made += "^w" + System.Math.Round(yd.made[(int)rr]).ToString("0") + "^k " + ResInfo.Names[(int)rr].ToLower() + ", ";
                 FLine(ref yy, aw, made == "" ? "^kNothing yet." : made.Substring(0, made.Length - 2) + ".");
-                FLine(ref yy, aw, "^kCoins earned: ^y" + Mathf.RoundToInt(yd.made[0]) + "^k.");
+                FLine(ref yy, aw, "^kCoins earned: ^y" + System.Math.Round(yd.made[0]).ToString("0") + "^k.");
             }
             yy += 3;
 
@@ -306,7 +330,7 @@ namespace Fleeced
                 var row = new Rect(0, yy, aw, 12);
                 if (UI.Clickable(row, b.def.name.ToUpper() + "\n" + b.status, true)) { selBuilding = b; selSheep = null; FocusOn(b.Center); }
                 string extra = IsPen(b) ? "lambs x" + PenBreedMult(b).ToString("0.0#") : "eats " + LotEatRate(b).ToString("0.0") + "/s";
-                PixelFont.Draw(2, yy + 2, "^y" + Trunc(b.def.name, 14) + " L" + b.level + "^w " + b.penCount + "/" + RoomCapacity(b) + "^k  " + extra, UI.Text);
+                PixelFont.Draw(2, yy + 2, "^y" + Trunc(b.def.name, 14) + " L" + b.level + "^w " + UI.Fmt(Inside(b)) + "/" + UI.Fmt(RoomCapacity(b)) + "^k  " + extra, UI.Text);
                 yy += 13;
             }
             if (nRooms == 0) FLine(ref yy, aw, "^rNo rooms! Build a Breeding Pen.");
