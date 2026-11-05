@@ -76,7 +76,7 @@ namespace Fleeced
     public partial class Game
     {
         /// the save format this build writes. Bump it with every released format change.
-        public const int CurrentSaveVersion = 11; // 11: herds and droves (M11)
+        public const int CurrentSaveVersion = 12; // 12: gate stages, breeding chambers, the M12 paths and decrees (M12); 11: herds and droves (M11)
 
         static string pendingLoadJson, pendingLoadFrom; // what the next world loads, and the file it came from
         static bool skipTitle;
@@ -632,7 +632,7 @@ namespace Fleeced
             if (h == null || h.Total < 1) return;
             bs.herdEwes = (double[])h.ewes.Clone(); bs.herdRams = (double[])h.rams.Clone(); bs.herdLambs = (double[])h.lambs.Clone();
             bs.herdWool = h.wool; bs.herdMilk = h.milk; bs.herdHunger = h.hunger;
-            bs.herdCarry = new[] { h.breedT, h.matureT, h.starveT, h.mealT, h.splitT, h.wolfT };
+            bs.herdCarry = new[] { h.breedT, h.matureT, h.starveT, h.mealT, h.splitT, h.wolfT, h.litterT }; // litterT: version 12
         }
 
         /// a room's herd from its save record: whole, non-negative counts and averages in range (anything else is a repair).
@@ -646,6 +646,7 @@ namespace Fleeced
             h.wool = Mathf.Clamp(bs.herdWool, 0, 1.25f); h.milk = Mathf.Clamp01(bs.herdMilk); h.hunger = Mathf.Clamp(bs.herdHunger, 0, 4.5f);
             var c = bs.herdCarry;
             if (c != null && c.Length >= 6) { h.breedT = Frac(c[0]); h.matureT = Frac(c[1]); h.starveT = Frac(c[2]); h.mealT = Frac(c[3]); h.splitT = Frac(c[4]); h.wolfT = Frac(c[5]); }
+            if (c != null && c.Length >= 7) h.litterT = Frac(c[6]); // the breeding chambers' litter on the way (version 12)
             if (h.Total >= 1) b.herd = h;
         }
 

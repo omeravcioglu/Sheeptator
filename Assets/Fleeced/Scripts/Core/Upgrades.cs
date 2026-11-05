@@ -14,6 +14,14 @@ namespace Fleeced
         public string what;                      // what the number is: "x speed", " lambs a release"...
         public double baseCost, growth;
         int cap, levelCap;
+        /// M12 paths stay hidden and locked until unlock says so (null: always open). The unlock sticks (a flag), unlockText
+        /// says why it is still locked, and say is the Supreme Leader's line when it opens. showMult scales the number shown
+        /// (a Stampede is x2 before its first level).
+        public System.Func<Game, bool> unlock;
+        public string unlockText, say;
+        public double showMult = 1;
+        string unlockFlag;
+        public string UnlockFlag { get { return unlockFlag ?? (unlockFlag = "path_" + id); } }
         public int MaxLevel { get { if (cap == 0) cap = UpgradeMath.CapFor(baseCost, growth, levelCap); return cap; } }
 
         public UpgradeDef(string id, string name, BKind kind, bool global, double per, bool add, string what, double baseCost, double growth, string desc, int maxLevel = 5000)
@@ -29,7 +37,7 @@ namespace Fleeced
         /// the effect as the player reads it: "x1.50 speed" or "+3 places"
         public string Show(int level)
         {
-            double e = Effect(level);
+            double e = Effect(level) * showMult;
             return add ? "+" + (e < 10 && e != System.Math.Floor(e) ? e.ToString("0.0") : UI.Fmt(e)) + what : "x" + (e < 100 ? e.ToString("0.00") : UI.Fmt(e)) + what;
         }
     }
@@ -59,6 +67,21 @@ namespace Fleeced
             new UpgradeDef("storage_space", "Bigger Barns", BKind.Storage, true, 0.15, false, " storage", 250, 1.18, "Room for more of every good in storage."),
             new UpgradeDef("offline", "Night Watch", BKind.Pen, true, 0.1, false, " offline earnings", 1000, 1.22, "While the game is closed the farm earns a quarter of its usual income, for up to 8 hours. This raises that share, to at most three quarters.", 10),
             new UpgradeDef("wool_growth", "Wool Tonic", BKind.Pen, true, 0.05, false, " wool growth", 500, 1.2, "Every sheep grows its fleece faster."),
+            // M12: hidden until the Sheep Gate's stages open them
+            new UpgradeDef("gate_burst", "Stampede", BKind.SheepGate, false, 0.5, false, " stampede", 12000, 1.2, "From the DOUBLE GATE on, every 6th release in a row while you HOLD SPACE is a STAMPEDE: that release lets out this many times the lambs. The Gate Keeper never stampedes.", 5000)
+                { unlock = g => g.GateStage >= 2, unlockText = "Opens with the DOUBLE GATE", showMult = 2, say = "STAMPEDE (U): every sixth release in a row gets BIGGER. The ground will remember." },
+            new UpgradeDef("pen_chambers", "Breeding Chambers", BKind.Pen, false, 1, true, " chambers a pen", 6000, 2.5, "Huts in the corners of every Breeding Pen, 8 at most. Couples of the pen's herd breed inside, and on each hut's own timer a LITTER pops out.", 8)
+                { unlock = g => g.GateStage >= 2, unlockText = "Opens with the DOUBLE GATE" },
+            new UpgradeDef("chamber_pairs", "Bigger Chambers", BKind.Pen, false, 10, true, " couples a hut", 10000, 1.17, "More couples in every Breeding Chamber (10 to start). Every milestone doubles them.", 5000)
+                { unlock = g => g.PathLevel("pen_chambers") >= 1, unlockText = "Buy a BREEDING CHAMBER first", say = "BIGGER CHAMBERS (U): more couples in every hut. Privacy is overrated." },
+            new UpgradeDef("pen_twins", "Twin Season", BKind.Pen, false, 4, true, "% twins", 25000, 1.55, "A share of the herd's births and of every chamber litter comes as TWINS. Named couples keep their own luck.", 12)
+                { unlock = g => g.PathLevel("pen_chambers") >= 1, unlockText = "Buy a BREEDING CHAMBER first", say = "TWIN SEASON (U). Two lambs for the price of one. The price was zero. It is now less." },
+            new UpgradeDef("pen_triplets", "Triplet Season", BKind.Pen, false, 2, true, "% triplets", 400000, 1.55, "A share of the herd's births and of every chamber litter comes as TRIPLETS.", 12)
+                { unlock = g => g.GateStage >= 3, unlockText = "Opens with the FLOCK PORTAL", say = "TRIPLET SEASON (U). Three at once. The ewes filed a complaint. I ate it." },
+            new UpgradeDef("machine_batch", "Bigger Hoppers", BKind.Shed, true, 0.25, false, " sheep a pass", 15000, 1.17, "Shearing Machines, the Wool Plant and Milking Machines take more of a drove in one PASS, so big droves go through faster. Only time changes: every sheep is still shorn or milked.", 5000)
+                { unlock = g => g.flags.Contains("pass_intro") || g.GateStage >= 3, unlockText = "Opens when a drove is too big for a machine", say = "BIGGER HOPPERS (U): every machine swallows more sheep in one pass. Chew faster, machines." },
+            new UpgradeDef("wool_value", "Wool Grading", BKind.Shed, false, 0.05, false, " wool prices", 8000, 1.18, "Wool, Clean Wool, Silk, Golden Fleece, Glow Wool and Cotton Candy sell for more, everywhere they are sold.", 5000)
+                { unlock = g => g.GateStage >= 2, unlockText = "Opens with the DOUBLE GATE", say = "WOOL GRADING (U): graded wool sells for more. I do the grading. Everything is grade A." },
         };
 
         static Dictionary<string, UpgradeDef> map;
@@ -114,9 +137,29 @@ namespace Fleeced
         /// the most levels the coins in hand buy (MAX)
         public int PathMaxBuy(UpgradeDef d) { int l = PathLevel(d.id); return UpgradeMath.MaxAffordable(d.baseCost, d.growth, l, res[0], d.MaxLevel - l); }
 
+        /// false while an M12 path waits for the Sheep Gate's stage that opens it
+        public bool PathUnlocked(UpgradeDef d) { return d.unlock == null || flags.Contains(d.UnlockFlag); }
+
+        /// Every step: M12 paths open as the gate grows, for good (a flag each, so demolishing the gate never locks them again).
+        /// One toast names every path that opens in a step (the toast has one slot), and the Supreme Leader says each one's line
+        /// in turn.
+        void CheckPathUnlocks()
+        {
+            string names = null; int opened = 0;
+            foreach (var d in Upgrades.All)
+            {
+                if (d.unlock == null || flags.Contains(d.UnlockFlag) || !d.unlock(this)) continue;
+                flags.Add(d.UnlockFlag);
+                if (++opened <= 3) names = names == null ? d.name.ToUpper() : names + ", " + d.name.ToUpper(); // the toast is one line
+                if (d.say != null) { string line = d.say; AnnounceWhenFree(d.UnlockFlag, () => LeaderPop(line, LExpr.Smug, 7f)); }
+            }
+            if (names != null) Toast("^yNEW UPGRADES:^w " + names + (opened > 3 ? " and " + (opened - 3) + " more" : ""));
+        }
+
         /// why `n` more levels can't be bought now, or null
         public string PathBlocker(UpgradeDef d, int n)
         {
+            if (!PathUnlocked(d)) return d.unlockText ?? "Locked";
             if (!d.global && !HasBuilding(d.kind)) return "Build a " + Buildings.Get(d.kind).name + " first";
             if (PathLevel(d.id) >= d.MaxLevel) return "Fully upgraded";
             if (n <= 0) return "Not enough coins";

@@ -36,6 +36,16 @@ G = open/close the main door of the selected room (or the first pen). C = convey
 - The **FLOCK** panel lists each room's herd above the named sheep, and a room's panel shows its herd: ewes, rams, lambs, fleece, udders, hunger and strains. The Supreme Leader introduces the herd the first time one forms, and new decrees run from Bigger Droves to a million sheep.
 - Saves are version 11. This build reads every older save; a version 10 build refuses a version 11 save and leaves it untouched.
 
+## New after 1.1 (in progress): flocks at scale
+- **The Sheep Gate grows.** UPGRADE it as the flock grows: the **Double Gate** at 500 sheep, the **Flock Portal** at 5,000, the **Sheep Launcher** at 50,000 (with Hyper-Industrialization and rare goods) and the **Singularity Gate** at 300,000. Every stage adds a lane with its own door, and one press lets a litter out of every lane: 1, 2, 6, 16 and 50 times the lambs. The gate grows upward, from the gatehouse to a tower under a cloud of wool.
+- **STAMPEDE.** From the Double Gate on, every 6th release in a row while you hold SPACE lets out twice the lambs (more with the **Stampede** upgrade). The HUD counts down to it. The Gate Keeper never stampedes.
+- **Breeding Chambers.** Up to 8 little huts in the corners of every Breeding Pen. Each takes couples from the pen's herd (**Bigger Chambers** for more) and pops a litter on its own timer: POP, POP, POP. **Twin Season** and **Triplet Season** make every herd birth bigger.
+- **Machine passes.** A machine takes a drove bigger than its batch (250 at Level 1, four times more a level) in several passes: the line waits longer, nothing is lost. **Bigger Hoppers** raises every batch.
+- **Wool Grading** makes every fleece good sell for more.
+- **Feedback at scale.** One "+12.3K LAMBS" number a moment, one sound, and a slight shake for your own press; lambs hop, fly or drop out of the lane doors and huts into the pen. Never more than 400 creatures are drawn, at any population.
+- Seven new upgrades stay hidden until the gate unlocks them. The Supreme Leader introduces each stage, the chambers and the passes, and eight new decrees run from the Double Gate to the Singularity Gate.
+- Saves are version 12; a version 11 build refuses a version 12 save and leaves it untouched.
+
 ## The core loop: rooms, doors, conveyors, machines (a sheep Factorio)
 - **Sheep never work. They are managed.** Every sheep is livestock: it lives in a Breeding Pen, eats in a Feeding Lot and rides conveyors through machines. It gets shorn for **wool**, milked for **milk**, bred for **lambs**, or turned into **mutton** (or sold alive at a Market). Every building runs by itself: farms grow food, labs research and markets sell, with no sheep standing in front of them. (Version 7 removed the old jobs; old saves turn every worker back into livestock.)
 - **Sheep stay contained.** Every exit leads onto a conveyor and then into another building or a room. A belt that ends on bare ground, a building that takes no sheep, or a machine with no open way out makes the sheep **wait right there** on the line, and the Supreme Leader shouts about it.

@@ -380,6 +380,7 @@ namespace Fleeced
         public static void DrawSprite(Rect r, Sprite s, bool flip = false)
         {
             if (!Repaint || s == null) return;
+            RuntimeAtlas.FlushIfDirty(); // a look fetched in OnGUI, after LateUpdate's flush
             var tr = s.textureRect;
             var tex = s.texture;
             var uv = new Rect(tr.x / tex.width, tr.y / tex.height, tr.width / tex.width, tr.height / tex.height);

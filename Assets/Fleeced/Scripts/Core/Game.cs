@@ -172,11 +172,16 @@ namespace Fleeced
             ClampStorage();
             UpdateRates(dt);
             CheckObjectives();
+            CheckPathUnlocks();
             CheckCoinTier();
 #if FLEECED_DEV
             DevCheckFlock();
 #endif
+            if (autosaveDue) { autosaveDue = false; Autosave(); } // the new day's autosave, once the whole step is done
         }
+        /// a new day began in this step: its autosave waits for the end of the step, so a save never falls between the clock and what
+        /// the clock moves (a breeding chamber firing on the day's boundary would be lost on a load)
+        bool autosaveDue;
 
         void UpdateRates(float dt)
         {

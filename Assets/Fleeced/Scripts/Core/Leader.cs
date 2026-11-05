@@ -816,6 +816,20 @@ namespace Fleeced
             waitKeys.Add(key); waitSays.Add(say);
         }
         bool IsWaiting(string key) { return waitKeys.Contains(key); }
+        /// A dialogue that waits its turn like any announcement, and also while SPACE is held or was in the last 1.5 s: SPACE turns
+        /// his pages, so a player at the Sheep Gate would skip it unread. While it waits it keeps its place at the head of the line,
+        /// so what was announced after it still comes after it.
+        void SayWhenQuiet(string key, System.Action say, System.Func<bool> wanted = null)
+        {
+            System.Action wait = null;
+            wait = () =>
+            {
+                if (wanted != null && !wanted()) return; // no longer wanted (the gate grew): it leaves the line
+                if (!(gateHeld || gateQuietT < 1.5f)) { say(); return; }
+                DropWaiting(key); waitKeys.Insert(0, key); waitSays.Insert(0, wait); // back to the front
+            };
+            AnnounceWhenFree(key, wait);
+        }
         void DropWaiting(string key)
         {
             int i = waitKeys.IndexOf(key);
@@ -916,6 +930,7 @@ namespace Fleeced
                 if (pop >= 4 && pop < popCap && Mathf.Min(rams, ewes) * 2 < Mathf.Max(rams, ewes))
                 { Advise("couples", "Only " + Mathf.Min(rams, ewes) + " breeding couples. Too many " + (rams > ewes ? "RAMS" : "EWES") + "! Lambs need both. Send the extras to the Slaughterhouse, not the ones we need.", LExpr.Stern, 3f); return; }
             }
+            if (M12Advice()) return;
             if (HerdAdvice()) return;
             if (anyPen == null && pop > 0) { Advise("nopen", "My sheep are roaming FREE. Free sheep think free thoughts. Build a BREEDING PEN and connect its doors with conveyors.", LExpr.Shout, 2f); return; }
             if (traffic > 30f) { Advise("traffic", "SHEEP TRAFFIC! The belts are jammed. Research STEEL BELTS and UPGRADE ALL BELTS, add machines, or build a second line.", LExpr.Shout, 2f); return; }

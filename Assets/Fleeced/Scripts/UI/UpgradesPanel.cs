@@ -43,10 +43,12 @@ namespace Fleeced
             UI.Icon(0, yy, "coin");
             PixelFont.Draw(13, yy + 1, "^y" + UI.Fmt(res[0]) + "^k coins.  Milestone levels double a bonus.", UI.Text);
             yy += 14;
-            // the inspected building's paths first, then the rest in table order
+            // the inspected building's paths first, then the rest in table order; paths the gate has not unlocked yet stay hidden
+            int hidden = 0;
             if (upgradeFocus.HasValue)
-                foreach (var d in Upgrades.All) if (!d.global && d.kind == upgradeFocus.Value) DrawPathRow(d, ref yy, aw);
-            foreach (var d in Upgrades.All) if (!(upgradeFocus.HasValue && !d.global && d.kind == upgradeFocus.Value)) DrawPathRow(d, ref yy, aw);
+                foreach (var d in Upgrades.All) if (!d.global && d.kind == upgradeFocus.Value) { if (PathUnlocked(d)) DrawPathRow(d, ref yy, aw); else hidden++; }
+            foreach (var d in Upgrades.All) if (!(upgradeFocus.HasValue && !d.global && d.kind == upgradeFocus.Value)) { if (PathUnlocked(d)) DrawPathRow(d, ref yy, aw); else hidden++; }
+            if (hidden > 0) { PixelFont.Draw(6, yy + 2, "^k" + hidden + " more upgrade" + (hidden > 1 ? "s unlock" : " unlocks") + " as the farm grows.", UI.Dim); yy += 14; }
             upgradesContentH = yy + 4;
             UI.EndScroll();
         }
@@ -60,7 +62,8 @@ namespace Fleeced
             double cost = n > 0 ? PathCost(d, n) : PathCost(d, 1);
             int next = UpgradeMath.NextMilestone(lv);
             if (next > d.MaxLevel) next = 0; // the path ends before it
-            string ms = maxed ? "^gFully upgraded" : next > 0 ? "^kLv " + next + ": x2, " + (next - lv) + " to go" : "^kEvery milestone passed";
+            string ms = maxed ? "^gFully upgraded" : next > 0 ? "^kLv " + next + ": x2, " + (next - lv) + " to go"
+                : d.MaxLevel < UpgradeMath.Milestones[0] ? "^kNo milestones: Lv " + d.MaxLevel + " is the top" : "^kEvery milestone passed";
             const float ch = 46;
             var row = new Rect(0, yy, aw, ch);
             UI.Card(row, false, locked, UI.Hover(row));

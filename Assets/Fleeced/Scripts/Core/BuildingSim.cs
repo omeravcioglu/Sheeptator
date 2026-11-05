@@ -123,9 +123,13 @@ namespace Fleeced
         {
             if (b.level >= b.def.maxLevel) return "Max level";
             if (b.construct < 1f) return "Under construction";
+            // the Sheep Gate's next stage needs a big enough flock first (M12): checked before its price, so a small farm never
+            // even reads it
+            if (b.def.kind == BKind.SheepGate && Population < ScaleMath.GateStageFlock[Mathf.Clamp(b.level, 0, ScaleMath.GateStageFlock.Length - 1)])
+                return "Needs a flock of " + UI.Fmt(ScaleMath.GateStageFlock[b.level]) + " (now " + UI.Fmt(Population) + ")";
             string t = b.def.levelTech[b.level];
             if (t != null && !tech.Contains(t)) return "Research: " + Research.Get(t).name;
-            if (res[0] < b.def.cost[b.level]) return "Need " + b.def.cost[b.level] + " coins";
+            if (res[0] < b.def.cost[b.level]) return "Need " + UI.Fmt(b.def.cost[b.level]) + " coins";
             Res r1, r2;
             int rn = RareUpgradeNeed(b, out r1, out r2);
             if (rn > 0 && (res[(int)r1] < rn || res[(int)r2] < rn)) return "Need " + RareUpgradeText(b) + " (DNA-altered sheep make them)";
@@ -319,7 +323,7 @@ namespace Fleeced
         void FinishConstruction(Building b)
         {
             b.construct = 1f;
-            bool wasRepair = b.damaged;
+            bool wasRepair = b.damaged, up = b.upgrading;
             b.damaged = false;
             if (b.upgrading) { b.upgrading = false; b.level++; }
             RefreshBuildingSprite(b);
@@ -330,6 +334,7 @@ namespace Fleeced
             else Log("^g" + b.def.name + " finished!" + (IsSheepMachine(b) ? "^w Sheep riding a conveyor into it get processed." : IsRoom(b) ? "" : "^w It runs by itself."));
             if (IsRoom(b)) SpawnPenFence(b); // new level, new fence
             else if (!wasRepair) SpawnClutterNear(b);
+            if (up && !wasRepair && b.def.kind == BKind.SheepGate) GateStageOpened(b);
         }
 
         public bool Has(Res r, double n) { return res[(int)r] >= n - 0.0001; }
@@ -762,7 +767,8 @@ namespace Fleeced
             }
             if (b.scaffold.gameObject.activeSelf) RefreshBuildingSprite(b);
             if (dt <= 0 || b.art == null) return;
-            bool active = b.Slots > 0 || b.def.kind == BKind.House || b.def.kind == BKind.Spa || b.def.kind == BKind.Statue || b.def.kind == BKind.CloneVat || (IsSheepMachine(b) && b.inMachine != null);
+            bool active = b.Slots > 0 || b.def.kind == BKind.House || b.def.kind == BKind.Spa || b.def.kind == BKind.Statue || b.def.kind == BKind.CloneVat || (IsSheepMachine(b) && b.inMachine != null)
+                          || (b.def.kind == BKind.SheepGate && b.level >= 2); // the gate's houses keep their chimneys and neon
             if (!active || !IsVisible(b.Center)) return;
             b.fxTimer -= dt;
             if (b.fxTimer > 0) return;

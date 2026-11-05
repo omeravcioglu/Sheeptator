@@ -785,7 +785,16 @@ namespace Fleeced
             if (HasBeltDoors(b) && !IsSheepMachine(b) && b.Built) y = DrawMachineDoors(b, y, aw);
             if (IsSheepMachine(b) && b.Built)
             {
-                if (b.inMachine != null) { UI.Bar(new Rect(0, y, aw, 9), 1f - b.machineT / Mathf.Max(0.01f, b.machineDur), UI.GoldLo, Trunc(b.inMachine.name, 14) + " inside"); y += 12; }
+                if (b.inMachine != null)
+                {
+                    string bar = b.machinePasses > 1 && b.inMachine.drove != null ? Trunc(b.inMachine.name, 9) + " + " + UI.Fmt(b.inMachine.drove.n) + ": pass " + MachinePass(b) + " of " + Mathf.CeilToInt(b.machinePasses)
+                        : Trunc(b.inMachine.name, 14) + " inside";
+                    UI.Bar(new Rect(0, y, aw, 9), 1f - b.machineT / Mathf.Max(0.01f, b.machineDur), UI.GoldLo, bar); y += 12;
+                }
+                // M12: how many of a drove one pass takes, once droves have outgrown a machine (Bigger Hoppers unlocked)
+                var hop = Upgrades.Get("machine_batch");
+                if (PassMachine(b) && hop != null && PathUnlocked(hop))
+                { PixelFont.Draw(0, y, "^kTakes ^y" + UI.Fmt(MachineBatch(b)) + "^k a pass (Hoppers x" + PathMult("machine_batch").ToString("0.00") + ")", UI.Text); y += 11; }
                 bool inBelt = HasBeltIn(b);
                 PixelFont.Draw(0, y, inBelt ? "^gSheep line connected" : "^rNo conveyor runs INTO it!", UI.Text); y += 11;
                 if (b.def.kind == BKind.GeneLab) y = DrawGeneLabControls(b, y, aw);
@@ -848,8 +857,8 @@ namespace Fleeced
                 if (b.level < b.def.maxLevel)
                 {
                     string bl = UpgradeBlocker(b);
-                    string label = "UPGRADE: " + b.def.levelNames[b.level].ToUpper() + " (" + b.def.cost[b.level] + "c)";
-                    if (PixelFont.Width(label) > aw - 12) label = "UPGRADE TO LV" + (b.level + 1) + " (" + b.def.cost[b.level] + "c)";
+                    string label = "UPGRADE: " + b.def.levelNames[b.level].ToUpper() + " (" + UI.Fmt(b.def.cost[b.level]) + "c)";
+                    if (PixelFont.Width(label) > aw - 12) label = "UPGRADE TO LV" + (b.level + 1) + " (" + UI.Fmt(b.def.cost[b.level]) + "c)";
                     string eff = UpgradeEffect(b);
                     if (UI.ButtonEx(new Rect(0, y, aw, 18), label, null, null, bl == null, bl != null ? "UPGRADE\n" + bl : "UPGRADE: " + b.def.levelNames[b.level].ToUpper() + "\n" + (eff ?? "Bigger, faster, more dangerous."))) Upgrade(b);
                     y += 21;
@@ -908,6 +917,8 @@ namespace Fleeced
                 if (Members(b) > cap) { PixelFont.Draw(0, y, "^rOvercrowded! Upgrade it or build another pen.", UI.Text); y += 11; }
                 UI.Bar(new Rect(0, y, aw, 9), b.breedProgress, Pal.C("e888a8"), "Next lamb " + Mathf.RoundToInt(b.breedProgress * 100) + "%"); y += 12;
                 PixelFont.Draw(0, y, "^kBreeding speed: ^yx" + (PenBreedMult(b) * (tech.Contains("matchmaking") ? 1.5f : 1f) * (HasGene("love_songs") ? 1.3f : 1f) * (float)PathMult("pen_breed")).ToString("0.0#") + "^k (levels, Matchmaking, Love Songs, Romance)", UI.Text); y += 11;
+                if (BirthMult() > 1) { PixelFont.Draw(0, y, "^kHerd births ^yx" + BirthMult().ToString("0.00") + "^k (Seasons)", UI.Text); y += 11; }
+                y = DrawChamberBlock(b, y, aw);
             }
             else
             {
@@ -1003,6 +1014,15 @@ namespace Fleeced
                 case BKind.Slaughter: return "Mutton per sheep: ^y~" + MuttonYield(null, b) + "^w x size. Sheep processed: ^y" + b.cyclesDone + "^w.";
                 case BKind.Creamery: return "3 Milk -> 1 Cheese. Milk in store: ^y" + UI.Fmt(res[(int)Res.Milk]);
                 case BKind.Spa: case BKind.Statue: case BKind.Flowers: return "Flock decoration mood: ^g+" + Mathf.RoundToInt(decorMood);
+                case BKind.SheepGate:
+                    {
+                        int st = Mathf.Clamp(b.level, 1, 5);
+                        double per = LambsPerRelease * ScaleMath.LaneLitter[st - 1], press = LambsPerRelease * ScaleMath.GateTotalMult(st);
+                        string s = st <= 1 ? "^y" + LambsText(press) + "^w lamb" + (press == 1 ? "" : "s") + " a release."
+                            : "Lanes ^y" + st + "^w, " + LambsText(per) + " lambs a lane, ^y" + LambsText(press) + "^w a release.\nStampede: every 6th release in a row while you hold SPACE: ^yx" + UI.Fmt(StampedeMult) + "^w.";
+                        if (st < b.def.maxLevel) s += "\nNext: ^y" + b.def.levelNames[st].ToUpper() + "^w at " + UI.Fmt(ScaleMath.GateStageFlock[st]) + " sheep (now " + UI.Fmt(Population) + ").";
+                        return s;
+                    }
             }
             return null;
         }

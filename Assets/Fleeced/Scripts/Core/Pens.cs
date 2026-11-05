@@ -555,7 +555,7 @@ namespace Fleeced
                 var hh = b.herd;
                 double hp = hh != null ? System.Math.Min(System.Math.Floor(hh.Ewes), System.Math.Floor(hh.Rams)) : 0;
                 if (hp >= 1) b.status = Members(b) >= RoomCapacity(b) || Population >= FlockCap ? "FULL: no room for lambs. Upgrade it, SHEEP STACKING, or another pen"
-                    : hh.hunger > 1.2f ? "The herd is too HUNGRY to breed. Send it to a Feeding Lot" : "The herd is breeding (" + UI.Fmt(hp) + " couples)";
+                    : hh.hunger > 1.2f ? "The herd is too HUNGRY to breed. Send it to a Feeding Lot" : HerdBreedingStatus(b, hp);
                 else b.status = Inside(b) < 1 ? "Empty" : b.penHungry > 0 ? "Too HUNGRY to breed. Send them to a Feeding Lot" : "Resting (lambs need a fed, happy RAM and EWE)";
                 return;
             }
@@ -666,6 +666,7 @@ namespace Fleeced
                 for (int i = 4; i < b.extras.Count; i++) if (b.extras[i] != null) b.extras[i].GetComponent<SpriteRenderer>().sprite = tr;
             }
             UpdateHerdVisual(b);
+            UpdateChamberHuts(b);
         }
 
         void ClearPen(Building b)
@@ -687,6 +688,41 @@ namespace Fleeced
             else if (b.def.kind == BKind.Dairy) t /= (float)PathMult("milk_speed");
             return t;
         }
+
+        /// Sheep a machine takes in one pass (M12): 250, 1000, 4000, 16000 or 64000 by its level, twice that for the Wool Plant, more
+        /// with Bigger Hoppers. A bigger drove takes more passes: only time, every one of it is still shorn or milked.
+        public double MachineBatch(Building b)
+        {
+#if FLEECED_DEV
+            if (DevHooks.BatchCapOverride > 0) return DevHooks.BatchCapOverride;
+#endif
+            double c = ScaleMath.BatchByLevel[Mathf.Clamp(b.level, 1, ScaleMath.BatchByLevel.Length) - 1];
+            if (b.def.kind == BKind.Plant) c *= ScaleMath.PlantBatchFactor;
+            return c * PathMult("machine_batch");
+        }
+
+        /// the machines that take a drove in passes: shearing and milking. The Slaughterhouse and the Gene Lab take one pass.
+        static bool PassMachine(Building b) { var k = b.def.kind; return k == BKind.Shed || k == BKind.Plant || k == BKind.Dairy; }
+
+        /// the first drove too big for a machine (once a world, after the tutorial): the Supreme Leader explains passes. It marks
+        /// itself said when it opens; queued again after a load (followers -1: the numbers are gone, so he speaks in general).
+        void PassIntro(Building b, double batch, double followers, double passes)
+        {
+            if (flags.Contains("pass_said")) return;
+            flags.Add("pass_said");
+            if (b != null && b.go != null) FocusOn(b.Center);
+            string first = b == null || followers < 0
+                ? "My machines are CHOKING on big droves, Hoof. A machine takes so many sheep in one PASS: a bigger drove takes several, and the whole line WAITS."
+                : "My " + b.def.name.ToUpper() + " is CHOKING, Hoof. It takes " + UI.Fmt(batch) + " sheep a pass. That drove was " + UI.Fmt(followers) + ": " + PassesText(passes) + ", and the whole line WAITED.";
+            LeaderSay(new[]
+            {
+                new LeaderPage(first, LExpr.Shout),
+                new LeaderPage("Nothing is lost, only TIME. Upgrade the machine (every level takes FOUR times as many), buy ^yBIGGER HOPPERS^w (U), or split the line with a second OUT door.", LExpr.Stern),
+            });
+        }
+
+        /// "6.4 passes", "just over one pass"
+        static string PassesText(double p) { return p < 1.05 ? "just over one pass" : (p < 10 ? p.ToString("0.#") : UI.Fmt(System.Math.Round(p))) + " passes"; }
 
         bool UsefulIn(Building b, Sheep s)
         {
@@ -845,7 +881,21 @@ namespace Fleeced
             b.machineLane = d.x != 0 ? Mathf.Clamp(ty - b.y, 0, b.def.h - 1) : Mathf.Clamp(tx - b.x, 0, b.def.w - 1);
             b.inMachine = s;
             b.machineDone = false; b.machineDid = false;
-            b.machineDur = UsefulIn(b, s) ? MachineTime(b) : 0.35f;
+            bool useful = UsefulIn(b, s), inPasses = useful && PassMachine(b);
+            // the leader and the followers the machine works on: a drove with nothing to give rides through on the leader's pass
+            double load = 1;
+            if (inPasses && s.drove != null && (b.def.kind == BKind.Dairy ? DroveMilk(s, b) : DroveShear(s, b)) >= 1) load += s.drove.n;
+            b.machinePasses = inPasses ? (float)ScaleMath.Passes(load, MachineBatch(b)) : 1f;
+            b.machinePassShown = 0;
+            b.machineDur = useful ? MachineTime(b) * b.machinePasses : 0.35f; // x exactly 1 for a drove that fits one pass
+            if (b.machinePasses > 1 && tutDone && !flags.Contains("pass_intro"))
+            {
+                // the first drove too big for a machine: it opens Bigger Hoppers (the flag), and the Supreme Leader explains
+                flags.Add("pass_intro");
+                double batch = MachineBatch(b), passes = b.machinePasses, n = load - 1;
+                var at = b;
+                SayWhenQuiet("passes", () => PassIntro(at, batch, n, passes));
+            }
             if (s.strain == Genetics.Turbo) b.machineDur *= 0.33f;
             b.machineT = b.machineDur;
             s.act = Act.InMachine;
@@ -854,6 +904,13 @@ namespace Fleeced
             s.pos = b.Center;
             s.status = b.def.kind == BKind.GeneLab ? "Inside the Gene Lab. Something hums." : b.def.kind == BKind.Dairy ? "Inside the milking machine" : b.def.kind == BKind.Plant ? "Inside THE MACHINE" : b.def.kind == BKind.Slaughter ? "Inside the Slaughterhouse" : "Inside the shearing machine";
             if (IsVisible(b.Center)) Sfx.Play("thud", 0.2f, 1.6f);
+        }
+
+        /// the pass a machine is on now (1 .. its passes rounded up)
+        static int MachinePass(Building b)
+        {
+            int all = Mathf.CeilToInt(b.machinePasses);
+            return Mathf.Clamp(1 + Mathf.FloorToInt((1f - b.machineT / Mathf.Max(0.01f, b.machineDur)) * all), 1, all);
         }
 
         void SimMachine(Building b, float dt, float mult)
@@ -871,7 +928,13 @@ namespace Fleeced
             bool chop = b.def.kind == BKind.Slaughter;
             if (!b.machineDone)
             {
-                b.status = (b.def.kind == BKind.GeneLab ? (Genetics.Get(b.geneMode) != null && s.strain != b.geneMode ? "Splicing " : "Sampling ") : b.def.kind == BKind.Dairy ? "Milking " : chop ? "Processing " : "Shearing ") + s.name;
+                // a drove in passes: its status changes with the pass, so it is only written then
+                int pass = b.machinePasses > 1 ? MachinePass(b) : 0;
+                if (pass == 0 || pass != b.machinePassShown)
+                {
+                    b.status = (b.def.kind == BKind.GeneLab ? (Genetics.Get(b.geneMode) != null && s.strain != b.geneMode ? "Splicing " : "Sampling ") : b.def.kind == BKind.Dairy ? "Milking " : chop ? "Processing " : "Shearing ") + s.name;
+                    if (pass > 0) { b.machinePassShown = pass; b.status += " + " + UI.Fmt(s.drove != null ? s.drove.n : 0) + " (pass " + pass + " of " + Mathf.CeilToInt(b.machinePasses) + ")"; }
+                }
                 if (b.machineDur > 0.5f && IsVisible(b.Center) && fxRng.NextDouble() < dt * (chop ? 3 : 7))
                 {
                     if (b.def.kind == BKind.GeneLab) SpawnParticles(b.Center + Vector2.up * 1.1f, new Color(0.5f, 1f, 0.6f), 2, 1.8f);

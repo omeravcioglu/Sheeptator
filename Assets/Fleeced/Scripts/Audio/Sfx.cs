@@ -38,6 +38,7 @@ namespace Fleeced
             clips["nom"] = new[] { Make(0.12f, (t, i) => Noise() * 0.45f * Env(t, 0.12f) * ((t % 0.04f) < 0.02f ? 1f : 0.25f)) };
             clips["zap"] = new[] { Make(0.2f, (t, i) => Sq(t, 1200 + Noise() * 800) * Env(t, 0.2f) * 0.15f) };
             clips["pop"] = new[] { Pop(440), Pop(500), Pop(390) };
+            clips["flock"] = new[] { Chorus() };
         }
 
         public static void Play(string name, float vol = 1f, float pitch = 1f)
@@ -46,21 +47,26 @@ namespace Fleeced
             AudioClip[] arr;
             if (!clips.TryGetValue(name, out arr)) return;
             if (name == "pop" && !PopAllowed()) return;
+            if (name == "flock" && !FlockAllowed()) return;
             src.pitch = pitch;
             src.PlayOneShot(arr[rng.Next(arr.Length)], vol);
         }
 
-        // "pop" plays at most 4 times a second (a held Sheep Gate can ask for more); the extra pops are dropped.
-        // A ring of the last 4 pop times (real time): popAt[popNext] is the oldest, and the next to be overwritten.
-        static readonly float[] popAt = { -9f, -9f, -9f, -9f };
-        static int popNext;
+        // "pop" plays at most 4 times a second (a held Sheep Gate can ask for more), "flock" (a big burst's chorus) at most 2;
+        // the extra ones are dropped. Each has a ring of its last play times (real time): at[next] is the oldest, and the next to
+        // be overwritten.
+        static readonly float[] popAt = { -9f, -9f, -9f, -9f }, flockAt = { -9f, -9f };
+        static int popNext, flockNext;
 
-        static bool PopAllowed()
+        static bool PopAllowed() { return RingAllowed(popAt, ref popNext); }
+        static bool FlockAllowed() { return RingAllowed(flockAt, ref flockNext); }
+
+        static bool RingAllowed(float[] at, ref int next)
         {
             float now = Time.unscaledTime;
-            if (now - popAt[popNext] < 1f) return false; // 4 pops in the last second already: drop this one
-            popAt[popNext] = now;
-            popNext = (popNext + 1) % popAt.Length;
+            if (now - at[next] < 1f) return false; // a full ring of plays in the last second already: drop this one
+            at[next] = now;
+            next = (next + 1) % at.Length;
             return true;
         }
 
@@ -84,12 +90,17 @@ namespace Fleeced
             return clip;
         }
 
-        static AudioClip Baa(float pitch, int seed)
+        static AudioClip Baa(float pitch, int seed) { return Make(BaaLength(seed), BaaVoice(pitch, seed)); }
+
+        static float BaaLength(int seed) { return 0.55f + seed * 0.04f; }
+
+        /// one baa as a generator for Make: it keeps its own phase, so it runs once, from t = 0
+        static Gen BaaVoice(float pitch, int seed)
         {
-            float dur = 0.55f + seed * 0.04f;
+            float dur = BaaLength(seed);
             float f0 = 260 * pitch;
             float phase = 0;
-            return Make(dur, (t, i) =>
+            return (t, i) =>
             {
                 float vib = Mathf.Sin(t * 2 * Mathf.PI * (11 + seed)) * (t > 0.12f ? 0.06f : 0.01f);
                 float f = f0 * (1 + vib) * (t < 0.08f ? 1.15f - t * 1.5f : 1f) * (1 - t * 0.15f);
@@ -100,7 +111,25 @@ namespace Fleeced
                 float s = saw * 0.5f + pulse * 0.4f + Mathf.Sin(phase * 2 * Mathf.PI * 3) * 0.25f;
                 float env = Mathf.Min(1, t * 25) * Mathf.Clamp01((dur - t) * 5f) * (0.75f + 0.25f * Mathf.Sin(t * 2 * Mathf.PI * 7));
                 return s * env * 0.32f;
-            });
+            };
+        }
+
+        /// "flock", the chorus of a big burst: three baas, each a little higher and later (at 0, 0.06 and 0.13 s), mixed into
+        /// one 0.8 s clip with its peak at 0.45
+        static AudioClip Chorus()
+        {
+            float[] pitch = { 0.9f, 1.15f, 1.35f }, start = { 0f, 0.06f, 0.13f };
+            var mix = new float[(int)(0.8f * Rate)];
+            for (int v = 0; v < 3; v++)
+            {
+                var voice = BaaVoice(pitch[v], v);
+                int at = (int)(start[v] * Rate), n = Mathf.Min((int)(BaaLength(v) * Rate), mix.Length - at);
+                for (int i = 0; i < n; i++) mix[at + i] += Mathf.Clamp(voice(i / (float)Rate, i), -1f, 1f);
+            }
+            float peak = 0;
+            foreach (float x in mix) peak = Mathf.Max(peak, Mathf.Abs(x));
+            float k = peak > 0 ? 0.45f / peak : 0f;
+            return Make(0.8f, (t, i) => mix[i] * k);
         }
 
         /// a gruff little vowel: the Supreme Leader's voice, one syllable at a time

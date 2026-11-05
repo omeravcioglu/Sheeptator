@@ -220,6 +220,8 @@ namespace Fleeced
                         return "Next level: ^yx" + (next / now).ToString("0.0#") + "^w output";
                     }
                 case BKind.Storage: return "Next level: +" + StorageCapOf(n) * 1.25f + " storage (now +" + StorageCapOf(b.level) * 1.25f + ")";
+                case BKind.SheepGate:
+                    return "Next stage: ^y" + b.def.levelNames[b.level].ToUpper() + "^w: " + n + " lanes, ^yx" + UI.Fmt(ScaleMath.GateTotalMult(n)) + "^w lambs a release (now x" + UI.Fmt(ScaleMath.GateTotalMult(b.level)) + ")";
             }
             return null;
         }

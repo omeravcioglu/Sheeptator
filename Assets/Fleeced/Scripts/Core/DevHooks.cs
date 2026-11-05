@@ -29,10 +29,34 @@ namespace Fleeced
         public static int FlockErrors, FlockWorld = -1;
         public static string FlockError;
         public static void ResetFlock() { Ledger = 0; FlockLast = -1; FlockErrors = 0; FlockError = null; FlockWorld = -1; }
+
+        /// M12: chamber timers that came round, bursts shown (and the lambs they counted), their sounds, runners sent, the last
+        /// shake a burst asked for, and a machine batch that replaces every machine's own (0 = off)
+        public static int ChamberFires, BurstsShown, BurstSounds, RunnersSpawned;
+        public static double BurstLambsShown, BatchCapOverride;
+        public static float LastShakeSet;
+        /// the m12 look storm: replaces every sheep's look each frame (null = off)
+        public static System.Func<Sheep, SheepLook, SheepLook> LookStorm;
+        public static void ResetM12() { ChamberFires = 0; BurstsShown = 0; BurstSounds = 0; RunnersSpawned = 0; BurstLambsShown = 0; LastShakeSet = 0; }
     }
 
     public partial class Game
     {
+        /// the Sheep Gate at a stage at once, without its build time (tests)
+        public void DevSetGateStage(int stage)
+        {
+            var g = GateAny;
+            if (g == null) return;
+            g.level = Mathf.Clamp(stage, 1, g.def.maxLevel); g.upgrading = false; g.construct = 1f;
+            RefreshBuildingSprite(g);
+        }
+        /// held releases in a row (a STAMPEDE every 6th)
+        public int DevGateStreak { get { return gateStreak; } }
+        /// the lambs the gate will show in its next burst
+        public double DevGateShowN { get { return gateShowN; } }
+        /// an announcement or dialogue still waiting its turn under this key
+        public bool DevIsWaiting(string key) { return IsWaiting(key); }
+
         /// runs the simulation in fixed steps without waiting for frames (event cards and dialogue are the caller's job)
         public void DevSimulate(float seconds, float step = 0.05f)
         {
@@ -211,6 +235,10 @@ namespace Fleeced
             var f = new List<string>(flags); f.Sort(System.StringComparer.Ordinal);
             var gn = new List<string>(genes); gn.Sort(System.StringComparer.Ordinal);
             sb.Append("\ntech=").Append(string.Join(",", t)).Append("\nflags=").Append(string.Join(",", f)).Append("\ngenes=").Append(string.Join(",", gn));
+            var pl = new List<string>();
+            foreach (var kv in pathLevels) pl.Add(kv.Key + ":" + kv.Value);
+            pl.Sort(System.StringComparer.Ordinal);
+            sb.Append("\npaths=").Append(string.Join(",", pl));
             long beltSum = 0; int belts = 0;
             for (int x = 0; x < MapW; x++)
                 for (int y = 0; y < MapH; y++)
@@ -248,6 +276,7 @@ namespace Fleeced
             // the carried fractions as floats, like the digest's other doubles: the save keeps them to a float's precision
             sb.Append(',').Append(((float)h.breedT).ToString("R", ci)).Append(',').Append(((float)h.matureT).ToString("R", ci)).Append(',').Append(((float)h.mealT).ToString("R", ci));
             sb.Append(',').Append(((float)h.starveT).ToString("R", ci)).Append(',').Append(((float)h.splitT).ToString("R", ci)).Append(',').Append(((float)h.wolfT).ToString("R", ci));
+            sb.Append(',').Append(((float)h.litterT).ToString("R", ci));
             return sb.ToString();
         }
     }

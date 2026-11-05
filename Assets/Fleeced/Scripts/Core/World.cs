@@ -440,6 +440,7 @@ namespace Fleeced
         void LateUpdate()
         {
             if (ghost != null && placing == null) ghost.SetActive(false);
+            RuntimeAtlas.Flush(); // the atlas pages painted this frame go to the GPU, once each
         }
     }
 }

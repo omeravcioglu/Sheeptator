@@ -54,7 +54,7 @@ namespace Fleeced
             if (d.kind == BKind.Palace) { LeaderArt.PaintPalace(c, s); return; }
             if (d.kind == BKind.Trough) { TroughPreview(c); return; }
             if (d.kind == BKind.Pen || d.kind == BKind.FeedLot) { PenPreview(c, d); return; }
-            if (d.kind == BKind.SheepGate) { GateHouse(c, false); return; }
+            if (d.kind == BKind.SheepGate) { GateStage(c, lv, s); return; }
             if (lv >= 4)
             {
                 if (d.kind == BKind.House) { HouseMega(c, lv, s); return; }
@@ -1214,6 +1214,160 @@ namespace Fleeced
             }
         }
 
+        // ---------- the Sheep Gate's stages (M12) ----------
+        /// The lane doors' top-left corners on the gate's canvas (y down), by stage, as x,y pairs: the ground lanes first, then
+        /// each row of doors above them. Stage 1 has none: its gate-house door is its one lane. A top pen fence hides the gate's
+        /// bottom 10 rows, so no door reaches below row c.h - 11.
+        public static readonly int[][] GateLaneSpots =
+        {
+            new int[0], new int[0],
+            new[] { 4, 38, 19, 38 },
+            new[] { 4, 38, 19, 38, 11, 24 },
+            new[] { 4, 66, 19, 66, 4, 42, 19, 42 },
+            new[] { 4, 84, 19, 84, 4, 58, 19, 58, 11, 36 },
+        };
+        // by stage, the rows (from, to) around each row of lane doors that go back to the bare wall: the house's windows there
+        // would peek out around the doors
+        static readonly int[][] GateBays =
+        {
+            new int[0], new int[0], new[] { 42, 46 }, new[] { 25, 46 }, new[] { 41, 54, 65, 74 }, new[] { 35, 48, 59, 72, 83, 92 },
+        };
+
+        /// how many lane doors a stage draws over the gate: 0 at stage 1, then 2, 3, 4 and 5
+        public static int GateLaneCount(int stage) { return GateLaneSpots[Mathf.Clamp(stage, 0, 5)].Length / 2; }
+
+        /// a lane door's bottom-left corner in tiles from the gate's pivot (its bottom-left). Stage 1 has no lane doors: it gives
+        /// a door-sized spot in the middle of the gate-house door, where its lamb looks out.
+        public static Vector2 GateLaneLocal(int stage, int lane)
+        {
+            stage = Mathf.Clamp(stage, 1, 5);
+            int[] s = GateLaneSpots[stage];
+            int x = 12, y = 38;
+            if (s.Length > 0) { int j = 2 * Mathf.Clamp(lane, 0, s.Length / 2 - 1); x = s[j]; y = s[j + 1]; }
+            int h = stage == 5 ? 104 : stage == 4 ? 86 : 58; // Get's canvas heights
+            return new Vector2(x / 16f, (h - y - 10) / 16f);
+        }
+
+        /// a lane's row of doors: 0 the ground lanes, 1 an upper lane, 2 the stage-5 cloud lane
+        public static int GateLaneRow(int stage, int lane)
+        {
+            int[] s = GateLaneSpots[Mathf.Clamp(stage, 0, 5)];
+            int row = 0;
+            for (int j = 1; j <= lane && 2 * j + 1 < s.Length; j++) if (s[2 * j + 1] < s[2 * j - 1]) row++;
+            return row;
+        }
+
+        /// The gate at a stage: the gate-house at 1; from 2 the cottage and the apartments (House), then the two towers
+        /// (HouseMega), on a stone plinth with a shut door for every lane.
+        static void GateStage(PixelCanvas c, int lv, BuildingSprite s)
+        {
+            if (lv <= 1) { GateHouse(c, false); return; }
+            int st = Mathf.Min(lv, 5);
+            if (st <= 3) House(c, st, s); else HouseMega(c, st, s);
+            // the house painter's first draws again, on Get's seed: its bare wall, put back around the rows of doors
+            var bare = new PixelCanvas(c.w, c.h, (BKind.SheepGate + "_" + lv).GetHashCode());
+            GateWall(bare, st);
+            int[] bays = GateBays[st];
+            for (int k = 0; k + 1 < bays.Length; k += 2)
+                for (int y = bays[k]; y <= bays[k + 1]; y++)
+                    for (int x = 0; x < c.w; x++) if (bare.Opaque(x, y)) c.Set(x, y, bare.Get(x, y));
+            GatePlinth(c);
+            if (st == 3)
+            {
+                // the apartments' windows went with the doors (its AC unit too, and the AC's steam): two by the upper lane
+                Window(c, 3, 26, 6, 6, true, false); Window(c, 22, 26, 6, 6, true, false);
+                c.Art(23, 27, "kwwk|wkwk");
+                c.HLine(2, 9, 32, C("5a5e64")); c.HLine(21, 28, 32, C("5a5e64"));
+                s.steam.Clear();
+            }
+            int[] spots = GateLaneSpots[st];
+            for (int j = 0; j + 1 < spots.Length; j += 2) LaneDoor(c, spots[j], spots[j + 1], spots[j + 1] < spots[1]);
+        }
+
+        /// the wall House (levels 2-3) and HouseMega (4-5) paint first, with the same calls: keep the two in step
+        static void GateWall(PixelCanvas c, int lv)
+        {
+            int W = c.w, base_ = c.h - 2, top = lv == 4 ? 14 : 24;
+            if (lv == 2) Planks(c, 3, base_ - 18, W - 6, 18, Pal.H("8a6440"));
+            else if (lv == 3) Bricks(c, 2, base_ - 34, W - 4, 34, Pal.H("8a5a48"));
+            else Bricks(c, 3, top, W - 6, base_ - top, lv == 4 ? C("7a4a3a") : C("5a5a6a"));
+        }
+
+        /// the stone plinth the ground lanes stand on, its dark sill on row c.h - 11 (a top pen fence hides the rows below). It
+        /// covers the house painter's own front door.
+        static void GatePlinth(PixelCanvas c)
+        {
+            Bricks(c, 2, c.h - 10, c.w - 4, 8, Stone);
+            c.HLine(2, c.w - 3, c.h - 11, WoodDark);
+        }
+
+        /// a shut lane door, 9 x 10 from (x, y): a red leaf like the pen doors' (planks, a cream cross-brace, a yellow handle) in
+        /// a dark frame. An upper lane's door has a little ledge under it to launch from.
+        static void LaneDoor(PixelCanvas c, int x, int y, bool upper)
+        {
+            Color32 red = C("b0402c"), redLo = C("7e2a1e"), brace = C("ecdcb4");
+            c.Rect(x, y, 9, 10, WoodDark);
+            c.Rect(x + 1, y + 1, 7, 8, red);
+            c.VLine(x + 3, y + 1, y + 8, redLo); c.VLine(x + 5, y + 1, y + 8, redLo);
+            c.HLine(x + 1, x + 7, y + 1, C("c8583c"));
+            c.Line(x + 1, y + 2, x + 7, y + 8, brace); c.Line(x + 7, y + 2, x + 1, y + 8, brace);
+            c.Set(x + 7, y + 5, Yellow);
+            if (!upper) return;
+            c.HLine(x - 1, x + 9, y + 10, C("9a7448"));
+            c.Set(x, y + 11, WoodDark); c.Set(x + 8, y + 11, WoodDark);
+        }
+
+        /// a lane door open, 9 x 10 with its pivot at the bottom-left: the dark doorway in the same frame, a lamb looking out.
+        /// Drawn over the shut door (at GateLaneLocal) while its lane lets lambs out.
+        public static Sprite GateLaneDoor()
+        {
+            BuildingSprite bs;
+            if (cache.TryGetValue("SheepGate_lane", out bs)) return bs.sprite;
+            var c = new PixelCanvas(9, 10);
+            c.Rect(0, 0, 9, 10, WoodDark);
+            c.Rect(1, 1, 7, 8, C("141218"));
+            c.Art(1, 3, ".w.w.w.|.wwwww.|swkwkws|.wwwww.|..wpw..");
+            int laneCell;
+            bs = new BuildingSprite { sprite = RuntimeAtlas.Put(c, Vector2.zero, true, 0, out laneCell) ?? c.ToSprite(new Vector2(0, 0)) }; // pinned on the atlas
+            cache["SheepGate_lane"] = bs;
+            return bs.sprite;
+        }
+
+        // ---------- breeding chambers (M12) ----------
+        /// a breeding chamber's hut, 16 x 20 with its pivot at the bottom-left: plank walls, a barn-red roof, a little door and a
+        /// heart lamp over it. Frame 0: idle, the lamp dark. 1-3: the lamp filling up with pink (a third, two thirds, full) as
+        /// the next litter grows. 4: the door open, a lamb in it.
+        static readonly Sprite[] hutSprites = new Sprite[5]; // every hut asks every frame: no key string
+        public static Sprite ChamberHut(int frame)
+        {
+            frame = Mathf.Clamp(frame, 0, 4);
+            if ((object)hutSprites[frame] != null) return hutSprites[frame];
+            string key = "hut" + frame;
+            BuildingSprite bs;
+            if (cache.TryGetValue(key, out bs)) return bs.sprite;
+            var c = new PixelCanvas(16, 20, 8); // one seed for every frame: the same planks
+            Color32 roof = C("8e3428"), pink = C("f070a0"), unlit = C("3c2a34");
+            Planks(c, 2, 7, 11, 11, Wood);
+            for (int r = 0; r < 5; r++) // 5 px at the ridge, 13 at the eaves: one over each wall
+                for (int x = 5 - r; x < 10 + r; x++) c.Set(x, 1 + r, Pal.Shade(roof, (x + 2 * r) % 4 == 0 ? 0.8f : r % 2 == 0 ? 1f : 0.9f));
+            c.HLine(1, 13, 6, Pal.Shade(roof, 0.6f));
+            if (frame == 4) { c.Rect(4, 13, 7, 5, Black); c.Rect(5, 14, 5, 4, C("141218")); c.Art(5, 14, ".www.|wkwkw|.wpw."); }
+            else Door(c, 4, 13, 7, 5, Wood);
+            string[] heart = { ".x.x.", "xxxxx", "xxxxx", ".xxx.", "..x.." };
+            int lit = frame == 0 ? 0 : frame == 1 ? 2 : frame == 2 ? 3 : 5; // the lamp's rows lit, from the bottom
+            for (int j = 0; j < 5; j++)
+                for (int i = 0; i < 5; i++)
+                    if (heart[j][i] == 'x') c.Set(5 + i, 8 + j, 5 - j <= lit ? pink : unlit);
+            if (lit == 5) c.Set(6, 9, C("ffc8dc"));
+            c.Outline(Pal.Ink);
+            Shadow(c);
+            int hutCell;
+            bs = new BuildingSprite { sprite = RuntimeAtlas.Put(c, Vector2.zero, true, 0, out hutCell) ?? c.ToSprite(new Vector2(0, 0)) }; // pinned on the atlas
+            cache[key] = bs;
+            hutSprites[frame] = bs.sprite;
+            return bs.sprite;
+        }
+
         // ---------- conveyor belts & items ----------
         /// conveyor tile; tier 0 rubber, 1 steel (red, faster), 2 mega (gold, wider, fastest)
         public static Sprite Belt(int dir, int frame, int tier)
@@ -1248,7 +1402,8 @@ namespace Fleeced
                 src = dst;
             }
             System.Array.Copy(src, c.px, 256);
-            bs = new BuildingSprite { sprite = c.ToSprite(Vector2.zero) };
+            int cell;
+            bs = new BuildingSprite { sprite = RuntimeAtlas.Put(c, Vector2.zero, true, 0, out cell) ?? c.ToSprite(Vector2.zero) }; // pinned on the atlas
             cache[key] = bs;
             return bs.sprite;
         }
@@ -1264,7 +1419,8 @@ namespace Fleeced
             var c = new PixelCanvas(w + 2, rows.Length + 2, 3);
             c.Art(1, 1, art);
             c.Outline(Pal.Ink);
-            bs = new BuildingSprite { sprite = c.ToSprite(new Vector2(0.5f, 0.35f)) };
+            int cell;
+            bs = new BuildingSprite { sprite = RuntimeAtlas.Put(c, new Vector2(0.5f, 0.35f), true, 0, out cell) ?? c.ToSprite(new Vector2(0.5f, 0.35f)) }; // pinned on the atlas
             cache[key] = bs;
             return bs.sprite;
         }

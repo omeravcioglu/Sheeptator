@@ -32,6 +32,10 @@ namespace Fleeced
         public Building workplace;
         public string status = "Grazing";
         public long lookCode = -1;   // the packed look of the sprite on screen (Art/SheepArt.cs); -1 = none yet
+        public int lookCell = -1, lookEpoch = -1; // its atlas cell, and RuntimeAtlas.Epoch when it was fetched (an eviction since: fetch again)
+#if FLEECED_DEV
+        public SheepLook devLook;    // the look last shown (the m12 look storm checks the pixels against it)
+#endif
         public float ageDays = 5;
         public int generation = 1;
         public string parents = "Unknown";
@@ -145,6 +149,13 @@ namespace Fleeced
         public Sheep spareHand;         // a herd hand inside with nothing to do (counted every step)
         public double herdStarved, herdEaten;             // the herd's deaths today (starved, eaten by Wolfsheep), for the evening's log
         public double herdShow; public float herdShowT;    // lambs born since the last "+N LAMBS" on screen, and the time to the next
+        // Breeding Chambers (M12), runtime only: why the huts are idle, how long the herd has been too hungry for them, the huts that
+        // fired this step (bits), the lambs of the next litter burst, each hut's couples and last litter, its open door, its sprite
+        public string chamberWhy; public float chamberIdleT; public int chamberPops;
+        public double litterShow; public float litterShowT;
+        public float[] chamberLast = new float[8], chamberBorn = new float[8], hutOpenT = new float[8];
+        public List<SpriteRenderer> huts = new List<SpriteRenderer>();
+        public string herdStatus; public double herdStatusN, herdStatusCh; // the herd's breeding status, written when its numbers change
         // conveyor machines (shearing / milking / wool plant / slaughterhouse): a door on every side a belt touches,
         // using doorOpen/doorFilter/doorPicks above. Until the player clicks a door it follows the belts (doorTouched).
         public bool[] doorTouched = new bool[4];
@@ -158,6 +169,8 @@ namespace Fleeced
         public float geneNoDnaT;                // Gene Lab: splices skipped for lack of DNA (for the Supreme Leader)
         public float refuseWaitT;               // sheep-seconds spent waiting at a building that takes no sheep (or is not built)
         public float noExitT;                   // seconds a processed sheep sat inside with no open way out
+        public float machinePasses = 1;         // M12: passes the drove inside takes (runtime; 1 for a drove that fits one batch)
+        public int machinePassShown;            // the pass its status names now (the status is written when the pass changes)
         public List<SpriteRenderer> doorSprites = new List<SpriteRenderer>();
 
         public GameObject go;

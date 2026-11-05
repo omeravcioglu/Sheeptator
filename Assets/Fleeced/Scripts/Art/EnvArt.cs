@@ -30,7 +30,8 @@ namespace Fleeced
             {
                 var c = new PixelCanvas(14, 5);
                 c.Ellipse(7, 2.5f, 7, 2.5f, new Color32(255, 255, 255, 255));
-                return c.ToSprite(new Vector2(0.5f, 0.5f), 16);
+                int cell;
+                return RuntimeAtlas.Put(c, new Vector2(0.5f, 0.5f), true, 0, out cell) ?? c.ToSprite(new Vector2(0.5f, 0.5f), 16); // pinned on the atlas
             });
         }
 

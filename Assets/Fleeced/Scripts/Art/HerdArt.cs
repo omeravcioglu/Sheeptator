@@ -54,22 +54,26 @@ namespace Fleeced
             return s;
         }
 
-        /// size 1-4 (1, 2, 3 or 4 sheep), facing right like its leader (flipped with it), standing on the sprite's bottom row
+        /// size 1-6: 1, 2, 3 or 4 sheep in a row (24 x 14), then 6 or 9 in two or three rows of 3 (24 x 20), each row further
+        /// back 5 px up and 2 px left. Facing right like its leader (flipped with it), the front row on the sprite's bottom row.
         public static Sprite Tail(int size, int fleece, int strain)
         {
-            size = Mathf.Clamp(size, 1, 4); fleece = Mathf.Clamp(fleece, 0, 2); strain = Mathf.Clamp(strain, 0, 15);
+            size = Mathf.Clamp(size, 1, 6); fleece = Mathf.Clamp(fleece, 0, 2); strain = Mathf.Clamp(strain, 0, 15);
             int key = (size * 3 + fleece) * 16 + strain;
             Sprite s;
             if (tails.TryGetValue(key, out s) && s != null) return s;
-            var c = new PixelCanvas(24, 14, key);
-            int bw = BodyW(fleece), baseY = 12 - BodyH(fleece); // the legs on row 13, the bottom one
-            for (int i = size - 1; i >= 0; i--) // the back ones first, a little higher up; the front one ends at the right edge
-            {
-                int x = 23 - (bw + 1) - i * 5, y = baseY - (i % 2) * 2 - (i >= 2 ? 1 : 0);
-                Small(c, Mathf.Max(0, x), Mathf.Max(0, y), fleece, strain, true, i % 2 == 1, i == 2);
-            }
+            int rows = size <= 4 ? 1 : size - 3, n = size <= 4 ? size : 3; // rows of sheep, and sheep a row
+            var c = new PixelCanvas(24, rows == 1 ? 14 : 20, key);
+            int bw = BodyW(fleece), baseY = c.h - 2 - BodyH(fleece); // the front row's legs on the bottom row
+            for (int r = rows - 1; r >= 0; r--) // the back row first
+                for (int i = n - 1; i >= 0; i--) // the back ones first, a little higher up; the front one ends at the right edge
+                {
+                    int x = 23 - (bw + 1) - i * 5 - r * 2, y = baseY - (i % 2) * 2 - (i >= 2 ? 1 : 0) - r * 5;
+                    Small(c, Mathf.Max(0, x), Mathf.Max(0, y), fleece, strain, true, (i + r) % 2 == 1, i == (2 + r) % 3); // each row its own faces
+                }
             c.Outline(Pal.A(Pal.Ink, 220));
-            s = c.ToSprite(new Vector2(1f, 0f)); // its bottom-right corner sits at the leader's tail
+            int cell;
+            s = RuntimeAtlas.Put(c, new Vector2(1f, 0f), true, 0, out cell) ?? c.ToSprite(new Vector2(1f, 0f)); // its bottom-right corner sits at the leader's tail; pinned on the atlas
             tails[key] = s;
             return s;
         }

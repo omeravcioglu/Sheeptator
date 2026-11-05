@@ -41,23 +41,41 @@ namespace Fleeced
         static readonly string[] StrainWool = { "", "f6dcef", "fbf4e4", "e6d4b4", "f0c040", "a8f070", "f4f0ec", "fff2e6", "f8b8e0", "8a5a3a", "8c8c96", "f8e060", "c8b4f0", "f07838" };
         /// a strain's fleece colour (hex), or null for plain sheep and unknown strains (the herd's floor and droves, Art/HerdArt.cs)
         public static string StrainWoolHex(int strain) { return strain > 0 && strain < StrainWool.Length ? StrainWool[strain] : null; }
-        static readonly Dictionary<string, Sprite> cache = new Dictionary<string, Sprite>();
-        static readonly Dictionary<long, Sprite> fast = new Dictionary<long, Sprite>(); // the same sprites by Pack(): a hit builds no key string
+        static readonly Dictionary<string, Sprite> cache = new Dictionary<string, Sprite>(); // looks Pack() cannot hold: a texture each
+        static readonly Dictionary<long, Sprite> fast = new Dictionary<long, Sprite>(); // looks by Pack(): a hit builds no key string
+        static readonly Dictionary<long, int> cellOf = new Dictionary<long, int>();     // their atlas cell (-1: a texture of its own)
 
-        public static Sprite Get(SheepLook l)
+        static SheepArt() { RuntimeAtlas.Evicted = Forget; }
+
+        public static Sprite Get(SheepLook l) { int cell; return Get(l, out cell); }
+
+        /// The look's sprite and its atlas cell (-1 when it has a texture of its own). A look lives in a RuntimeAtlas cell, and a
+        /// cell nobody showed this frame can be recycled: Forget then drops it here, and the next Get paints it again.
+        public static Sprite Get(SheepLook l, out int cell)
         {
             long p = l.Pack();
             Sprite s;
-            if (p >= 0 && fast.TryGetValue(p, out s)) return s;
+            if (p >= 0)
+            {
+                if (fast.TryGetValue(p, out s)) { cell = cellOf[p]; RuntimeAtlas.Touch(cell); return s; }
+                var c = Build(l);
+                s = RuntimeAtlas.Put(c, new Vector2(0.5f, 0f), false, p, out cell);
+                if (s == null) { s = c.ToSprite(new Vector2(0.5f, 0f)); cell = -1; }
+                fast[p] = s; cellOf[p] = cell;
+                return s;
+            }
+            cell = -1;
             string k = l.Key();
             if (!cache.TryGetValue(k, out s))
             {
                 s = Build(l).ToSprite(new Vector2(0.5f, 0f));
                 cache[k] = s;
             }
-            if (p >= 0) fast[p] = s;
             return s;
         }
+
+        /// the atlas recycled this look's cell (it destroyed the Sprite): forget it, so the next Get paints it again
+        static void Forget(long key) { fast.Remove(key); cellOf.Remove(key); }
 
         public static PixelCanvas Build(SheepLook l)
         {

@@ -776,7 +776,8 @@ namespace Fleeced
         void UpdateSheepVisual(Sheep s, float rdt)
         {
             if (s.go == null) return;
-            if (s.act == Act.Hidden || s.act == Act.InMachine) { s.go.SetActive(false); s.shadow.gameObject.SetActive(false); return; }
+            // hidden or inside a machine: its portrait (the FLOCK panel, the inspector) still shows its look, so its cell is kept
+            if (s.act == Act.Hidden || s.act == Act.InMachine) { RuntimeAtlas.Touch(s.lookCell); s.go.SetActive(false); s.shadow.gameObject.SetActive(false); return; }
             if (!s.go.activeSelf) { s.go.SetActive(true); s.shadow.gameObject.SetActive(true); }
             s.animT += rdt;
             var look = new SheepLook
@@ -807,6 +808,9 @@ namespace Fleeced
             look.frame = moving ? ((int)(s.animT * 7) % 2) : 0;
 
             if (s.dead && s.act == Act.Ghost) look.ghost = true;
+#if FLEECED_DEV
+            if (DevHooks.LookStorm != null) look = DevHooks.LookStorm(s, look); // the m12 look storm: a random look every frame
+#endif
             SetSheepSprite(s, look);
             s.sr.flipX = !s.faceRight;
             if (s.strain == Genetics.Glow && !s.dead && fxRng.NextDouble() < rdt * 1.2 && IsVisible(s.pos)) SpawnParticles(s.pos + Vector2.up * 0.6f, new Color(0.6f, 1f, 0.45f), 1, 0.8f);
@@ -850,6 +854,7 @@ namespace Fleeced
                 }
             }
             else s.sr.color = Color.white;
+            if (s.dead) BudgetGhost(s); // past the agent budget it is not drawn; when it leaves the flock stays exactly as it was
 
             s.go.transform.position = p;
             s.go.transform.localScale = sc;
@@ -875,14 +880,21 @@ namespace Fleeced
             }
         }
 
-        /// shows the look on the sheep. s.lookCode remembers what is on screen, so an unchanged look costs no lookup and no sprite write.
+        /// shows the look on the sheep. s.lookCode remembers what is on screen, so an unchanged look costs no lookup and no sprite write,
+        /// only a touch of its atlas cell (a cell shown this frame is never recycled). After any eviction (a new RuntimeAtlas.Epoch)
+        /// every sheep fetches its look again, so a recycled cell never shows the wrong sheep.
         /// Only this writes a sheep's sprite (SpawnSheepGO resets the code for a new renderer).
         static void SetSheepSprite(Sheep s, SheepLook look)
         {
             long code = look.Pack();
-            if (code >= 0 && code == s.lookCode) return;
-            s.sr.sprite = SheepArt.Get(look);
-            s.lookCode = code;
+#if FLEECED_DEV
+            s.devLook = look;
+#endif
+            if (code >= 0 && code == s.lookCode && s.lookEpoch == RuntimeAtlas.Epoch) { RuntimeAtlas.Touch(s.lookCell); return; }
+            int cell;
+            var spr = SheepArt.Get(look, out cell);
+            if (s.sr.sprite != spr) s.sr.sprite = spr;
+            s.lookCode = code; s.lookCell = cell; s.lookEpoch = RuntimeAtlas.Epoch;
         }
 
         public bool IsVisible(Vector2 p)
@@ -893,7 +905,9 @@ namespace Fleeced
 
         void UpdateVisuals(float rdt, float dt)
         {
+            RuntimeAtlas.Frame++; // the atlas recycles only cells nobody touched this frame
             VisualWorldUpdate(rdt);
+            PlanAgents(); // what the 400-agent budget leaves for dying and ghost sheep (Core/Runners.cs)
             for (int i = sheep.Count - 1; i >= 0; i--)
             {
                 var s = sheep[i];
@@ -903,6 +917,7 @@ namespace Fleeced
             foreach (var b in buildings) UpdateBuildingVisual(b, rdt, dt);
             UpdateBeltVisuals(rdt, dt);
             UpdateWolfVisuals(rdt);
+            UpdateRunners(rdt);
             if (petT > 0) petT -= rdt;
         }
         public float petT;

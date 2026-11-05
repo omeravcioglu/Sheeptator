@@ -111,6 +111,7 @@ namespace Fleeced
                 f.pos.y += rdt * (f.speech ? 0.15f : 0.6f);
                 if (f.life <= 0) ftexts.RemoveAt(i);
             }
+            UpdateBursts(rdt);
             if (deathBannerT > 0) deathBannerT -= rdt;
             if (toastT > 0) toastT -= rdt;
             if (autosaveNoteT > 0) autosaveNoteT -= rdt;
@@ -138,6 +139,7 @@ namespace Fleeced
                 }
                 else PixelFont.DrawOutlined(Mathf.Round(gx - w / 2), Mathf.Round(gy - 4), f.text, c);
             }
+            DrawBursts(scale);
         }
     }
 }

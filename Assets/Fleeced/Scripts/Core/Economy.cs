@@ -118,6 +118,9 @@ namespace Fleeced
         /// the price of one unit sold by hand or by an event: the best Market's level bonus applies
         public float SellPrice(Res r) { return SellPrice(r, null); }
 
+        /// the goods a Shearing Machine shears: Wool Grading raises their price
+        public static bool IsFleece(Res r) { return r == Res.Wool || r == Res.CleanWool || r == Res.Silk || r == Res.GoldFleece || r == Res.GlowWool || r == Res.CottonCandy; }
+
         /// `at` is the Market that makes the sale (goods riding into it, or its own AUTO batch); null = the best Market
         public float SellPrice(Res r, Building at)
         {
@@ -132,6 +135,7 @@ namespace Fleeced
             if (r == Res.Luxury && tech.Contains("baalenciaga")) p *= 1.5f;
             if (flags.Contains("luxury_brand") && r >= Res.Clothing && r <= Res.Luxury) p *= 1.15f;
             if (flags.Contains("fake_wool") && r <= Res.CleanWool) p *= 1.2f;
+            if (IsFleece(r)) p *= (float)PathMult("wool_value"); // Wool Grading (M12; x1 until upgraded)
             p *= (float)PathMult("market_price"); // Haggling (x1 until upgraded)
             p *= CoinTierMult;                    // Coin Evolutions (x1 at the first tier)
             return p;
@@ -380,12 +384,20 @@ namespace Fleeced
             new Objective("flock80", "Grow the flock to 80 sheep", 2000, g => g.Population >= 80, g => g.Population, 80, "EIGHTY sheep. An empire needs subjects. And feeding factories."),
             new Objective("drove5", "Buy 5 levels of Bigger Droves (UPGRADES)", 1500, g => g.PathLevel("drove_size") >= 5, g => g.PathLevel("drove_size"), 5, "Past 24 named sheep a room keeps a HERD, and the herd follows the named ones out of the doors. Buy BIGGER DROVES (U): one sheep leads, a crowd follows, the machines take them all at once."),
             new Objective("flock250", "Grow the flock to 250 sheep", 2500, g => g.Population >= 250, g => g.Population, 250, "TWO HUNDRED AND FIFTY sheep. I have stopped learning their names. SHEEP STACKING (U) makes room for more."),
+            new Objective("doublegate", "Upgrade the Sheep Gate to a Double Gate (500 sheep)", 4000, g => g.GateStage >= 2, null, 0, "A DOUBLE GATE, Hoof. At FIVE HUNDRED sheep, click the SHEEP GATE and UPGRADE it: two lanes, two doors, twice the lambs a press."),
             new Objective("flock1000", "Grow the flock to 1,000 sheep", 5000, g => g.Population >= 1000, g => g.Population, 1000, "ONE THOUSAND sheep. A herd. A horde. A HERD-HORDE. Feed it."),
+            new Objective("chamber1", "Buy a Breeding Chamber (UPGRADES)", 5000, g => g.PathLevel("pen_chambers") >= 1, null, 0, "BREEDING CHAMBERS in UPGRADES (U): huts where couples breed on a timer. Pop. Pop. POP."),
+            new Objective("gate10k", "Let 10,000 lambs out of the Sheep Gate", 8000, g => g.gateReleased >= 1e4, g => g.gateReleased, 1e4, "TEN THOUSAND lambs through the gate. Hold SPACE until it is empty: the sixth in a row is a STAMPEDE."),
             new Objective("moongrass", "Research the Moon Grass Hypothesis", 1500, g => g.tech.Contains("moon_grass"), null, 0, "Research the MOON GRASS HYPOTHESIS. I have a feeling about the moon."),
             new Objective("rocket", "Build the Rocket Pad", 0, g => g.HasBuilding(BKind.Rocket), null, 0, "Build the ROCKET PAD. Someone has to check."),
             new Objective("launch", "Launch a sheep into space", 0, g => g.flags.Contains("launched"), null, 0, "LAUNCH a sheep into space. Choose someone expendable. So, anyone."),
             new Objective("singularity", "Reach the Wool Singularity (any building Level 5)", 0, g => g.MaxBuildingLevel() >= 5, null, 0, "Reach LEVEL 5. The Wool Singularity. Then even I will be afraid."),
             new Objective("flock10k", "Grow the flock to 10,000 sheep", 25000, g => g.Population >= 1e4, g => g.Population, 1e4, "TEN THOUSAND sheep. Stack them. Herd them. Count them, if you must."),
+            new Objective("portal", "Upgrade the gate to a Flock Portal", 40000, g => g.GateStage >= 3, null, 0, "A FLOCK PORTAL: three lanes, six times the lambs. Ten thousand sheep deserve a bigger door."),
+            new Objective("chambers8", "Buy all 8 Breeding Chambers", 60000, g => g.PathLevel("pen_chambers") >= 8, g => g.PathLevel("pen_chambers"), 8, "EIGHT chambers in every pen. Eight timers. One glorious rhythm."),
+            new Objective("flock100k", "Grow the flock to 100,000 sheep", 150000, g => g.Population >= 1e5, g => g.Population, 1e5, "ONE HUNDRED THOUSAND sheep. I have run out of fence. Buy more fence."),
+            new Objective("launcher", "Upgrade the gate to a Sheep Launcher", 250000, g => g.GateStage >= 4, null, 0, "A SHEEP LAUNCHER. The upper lanes FIRE the lambs. Aim is optional."),
+            new Objective("singgate", "Build the Singularity Gate", 1000000, g => g.GateStage >= 5, null, 0, "THE SINGULARITY GATE. Five lanes. Fifty times the lambs. Do not look directly into it."),
             new Objective("flock1m", "Grow the flock to 1,000,000 sheep", 0, g => g.Population >= 1e6, g => g.Population, 1e6, "ONE MILLION SHEEP, Hoof. Every one of them mine. Most of them nameless. All of them fluffy."),
         };
 
@@ -536,7 +548,7 @@ namespace Fleeced
             if (Season == 2 && DayOfSeason == 8) Log("^oWinter is coming.^w Grass will barely grow. Stock up on food.");
             ScheduleWolves();
             RollDailyEvent();
-            Autosave();
+            autosaveDue = true; // written at the end of this step (Simulate)
         }
 
         void Escape(Sheep s)

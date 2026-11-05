@@ -11,8 +11,9 @@ namespace Fleeced
         public readonly double[] ewes = new double[Strains], rams = new double[Strains], lambs = new double[Strains];
         /// the fleece of all of them (0..1.25), the ewes' udders (0..1) and the adults' hunger, as one sheep has them
         public float wool = 0.5f, milk, hunger = 0.2f;
-        /// fractions carried from step to step: lambs on the way, lambs growing up, starving, meals, splits, wolf bites
-        public double breedT, matureT, starveT, mealT, splitT, wolfT;
+        /// fractions carried from step to step: lambs on the way, lambs growing up, starving, meals, splits, wolf bites, and the
+        /// breeding chambers' next litter (M12)
+        public double breedT, matureT, starveT, mealT, splitT, wolfT, litterT;
 
         public double Ewes { get { return Sum(ewes); } }
         public double Rams { get { return Sum(rams); } }
@@ -199,7 +200,7 @@ namespace Fleeced
                 if (b.herd != null && b.herd.Total >= 1) SimHerd(b, b.herd, dt);
                 else
                 {
-                    if (b.herd != null) { var e = b.herd; e.breedT = 0; e.matureT = 0; e.starveT = 0; e.mealT = 0; }
+                    if (b.herd != null) { var e = b.herd; e.breedT = 0; e.matureT = 0; e.starveT = 0; e.mealT = 0; e.litterT = 0; }
                     MeltSpare(b);
                 }
             }
@@ -264,7 +265,7 @@ namespace Fleeced
                 h.milk = Mathf.Min(1f, h.milk + dd * mg);
             }
             if (IsLot(b)) HerdEat(b, h, dt);
-            else HerdBreed(b, h, dt, mood);
+            else { HerdBreed(b, h, dt, mood); HerdChambers(b, h, dt, mood); }
             // starving: about 30% of them a day while hunger is at its worst (a named sheep dies at once)
             if (h.hunger >= 4.5f && adultsNow >= 1)
             {
@@ -326,11 +327,12 @@ namespace Fleeced
         void HerdBreed(Building b, Flock h, float dt, float mood)
         {
             double pairs = System.Math.Min(System.Math.Floor(h.Ewes), System.Math.Floor(h.Rams));
+            pairs -= ChambersHold(pairs); // the couples in the Breeding Chambers breed there (Core/Chambers.cs); exactly -0 without
             if (pairs < 1 || h.hunger > 1.2f || mood < 30) return;
             double room = System.Math.Min(RoomCapacity(b) - Members(b), FlockCap - herdPop);
             if (room < 1) return;
             double sp = 0.45 * System.Math.Pow(pairs, 0.6) * (tech.Contains("matchmaking") ? 1.5 : 1) * PenBreedMult(b) * (HasGene("love_songs") ? 1.3 : 1)
-                        * Mathf.Clamp(mood / 65f, 0.4f, 1.3f) * PathMult("pen_breed") * (HasGene("twin_genes") ? 1.2 : 1);
+                        * Mathf.Clamp(mood / 65f, 0.4f, 1.3f) * PathMult("pen_breed") * (HasGene("twin_genes") ? 1.2 : 1) * BirthMult();
             if (!tutDone) sp *= CurStep != null && CurStep.id == "breed" ? 2.5 : 0.6;
             h.breedT += dt / DayLength * sp;
             if (h.breedT < 1) return;
@@ -341,7 +343,7 @@ namespace Fleeced
 
         readonly double[] lambW = new double[Flock.Strains];
         /// the herd's lambs take a parent's strain like a named lamb would (Strong Genes, hybrids and all), by expected value
-        void HerdBirths(Building b, Flock h, double born)
+        void HerdBirths(Building b, Flock h, double born, bool show = true)
         {
             if (born < 1) return;
             double E = h.Ewes, R = h.Rams;
@@ -381,7 +383,7 @@ namespace Fleeced
             }
             births = Bump(births, made); Ledger(made);
             herdPop += made;
-            b.herdShow += made; // shown in bursts by UpdateHerdVisual
+            if (show) b.herdShow += made; // shown in bursts by UpdateHerdVisual (a chamber litter shows its own)
         }
 
         readonly Sheep lambProbe = new Sheep();
@@ -824,9 +826,9 @@ namespace Fleeced
             if (!b.herdSr.gameObject.activeSelf) b.herdSr.gameObject.SetActive(true);
             // the lambs born since the last burst, at most one burst a room a second (real time: nothing here feeds the simulation)
             b.herdShowT -= Time.unscaledDeltaTime;
-            if (b.herdShow >= 1 && b.herdShowT <= 0)
+            if (b.herdShow >= 1 && b.herdShowT <= 0 && !HutsShowBursts(b)) // a pen with huts shows one number for both (Core/Chambers.cs)
             {
-                if (IsVisible(b.Center)) FloatText(b.Center + Vector2.up * 1.4f, "+" + UI.Fmt(b.herdShow) + (b.herdShow >= 2 ? " LAMBS" : " LAMB"), new Color(1f, 0.6f, 0.75f));
+                ShowBurst(b.Center + Vector2.up * 1.4f, b.herdShow, BurstKind.Births); // one number, and a baa for a big one (Core/Bursts.cs)
                 b.herdShow = 0; b.herdShowT = 1.2f;
             }
             double fill = h.Total / System.Math.Max(1, RoomCapacity(b));
@@ -856,7 +858,7 @@ namespace Fleeced
                 s.tail = go.AddComponent<SpriteRenderer>();
             }
             if (!s.tail.gameObject.activeSelf) s.tail.gameObject.SetActive(true);
-            int size = n < 10 ? 1 : n < 100 ? 2 : n < 1000 ? 3 : 4;
+            int size = ScaleMath.ClusterTier(n); // 1-4 as before, and the two- and three-row crowds of 10,000 and 100,000
             int fleece = s.drove.wool < 0.35f ? 0 : s.drove.wool < 0.98f ? 1 : 2;
             var spr = HerdArt.Tail(size, fleece, s.strain);
             if (s.tail.sprite != spr) s.tail.sprite = spr;
